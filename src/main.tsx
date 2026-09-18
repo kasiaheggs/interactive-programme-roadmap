@@ -603,17 +603,15 @@ function ragRank(value?: string): number | undefined {
   return undefined;
 }
 
-function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): "Improved" | "Unchanged" | "Deteriorated" | "Not captured" {
+function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): string {
+  const captured = meaningfulText(current?.ragMovement);
+  if (captured) return captured;
   const currentRank = ragRank(current?.overallRag);
   const previousRank = ragRank(previous?.overallRag);
-  if (!currentRank || !previousRank) {
-    const captured = meaningfulText(current?.ragMovement);
-    if (captured === "Improved" || captured === "Unchanged" || captured === "Deteriorated") return captured;
-    return "Not captured";
-  }
+  if (!currentRank || !previousRank) return "Not captured";
   if (currentRank < previousRank) return "Improved";
   if (currentRank > previousRank) return "Deteriorated";
-  return "Unchanged";
+  return "Stable";
 }
 
 function dateInSelectedReportingPeriod(value: string | undefined, selected?: WeeklySummary): boolean {
@@ -2369,16 +2367,18 @@ function WeeklyExecutiveStatusView({
       ? `<ul style="margin:8px 0 0 18px;padding:0;">${items.map((item) => `<li style="margin:0 0 6px;">${escapeHtml(item)}</li>`).join("")}</ul>`
       : `<p style="margin:8px 0 0;color:#5b6960;">${escapeHtml(empty)}</p>`;
     const panel = (title: string, body: string, accent = "#3d78a9", background = "#f8fbff") => `
-      <td style="vertical-align:top;width:50%;padding:8px;">
-        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;border:1px solid #c7d1cb;border-left:5px solid ${accent};border-radius:8px;background:${background};">
-          <tr>
-            <td style="padding:12px;">
-              <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:#1c2621;">${escapeHtml(title)}</div>
-              ${body}
-            </td>
-          </tr>
-        </table>
-      </td>
+      <tr>
+        <td style="padding:0 0 10px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;border:1px solid #c7d1cb;border-left:5px solid ${accent};border-radius:8px;background:${background};">
+            <tr>
+              <td style="padding:12px;">
+                <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:#1c2621;">${escapeHtml(title)}</div>
+                ${body}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
     `;
     const lowerRow = (label: string, value: string) => `<div style="margin:0 0 4px;"><b>${escapeHtml(label)}:</b> ${escapeHtml(value)}</div>`;
     const lowerItem = (eyebrow: string, title: string, meta?: string) => `
@@ -2475,14 +2475,10 @@ function WeeklyExecutiveStatusView({
         <tr>
           <td colspan="2">
             <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
-              <tr>
-                ${panel("Upcoming milestones", milestonesHtml, "#3d78a9", "#f7fbff")}
-                ${panel("Risks / issues", risksHtml, "#b33a32", "#fff7f6")}
-              </tr>
-              <tr>
-                ${panel("Decisions", decisionsHtml, "#ff8a00", "#fffaf2")}
-                ${panel("Material Changes to Plan", changesHtml, "#315e9c", "#f8fbff")}
-              </tr>
+              ${panel("Upcoming milestones", milestonesHtml, "#3d78a9", "#f7fbff")}
+              ${panel("Risks / issues", risksHtml, "#b33a32", "#fff7f6")}
+              ${panel("Decisions", decisionsHtml, "#ff8a00", "#fffaf2")}
+              ${panel("Material Changes to Plan", changesHtml, "#315e9c", "#f8fbff")}
             </table>
           </td>
         </tr>

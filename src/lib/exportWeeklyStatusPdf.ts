@@ -140,17 +140,15 @@ function ragRank(value?: string): number | undefined {
   return undefined;
 }
 
-function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): "Improved" | "Unchanged" | "Deteriorated" | "Not captured" {
+function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): string {
+  const captured = meaningfulText(current?.ragMovement);
+  if (captured) return captured;
   const currentRank = ragRank(current?.overallRag);
   const previousRank = ragRank(previous?.overallRag);
-  if (!currentRank || !previousRank) {
-    const captured = meaningfulText(current?.ragMovement);
-    if (captured === "Improved" || captured === "Unchanged" || captured === "Deteriorated") return captured;
-    return "Not captured";
-  }
+  if (!currentRank || !previousRank) return "Not captured";
   if (currentRank < previousRank) return "Improved";
   if (currentRank > previousRank) return "Deteriorated";
-  return "Unchanged";
+  return "Stable";
 }
 
 function dateInSelectedReportingPeriod(value: string | undefined, selected?: WeeklySummary): boolean {
