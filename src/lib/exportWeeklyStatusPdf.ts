@@ -282,7 +282,7 @@ function weeklyRiskIssueCandidates(tracker?: TrackerData): WeeklyRiskIssueItem[]
         title: risk.title,
         marker: risk.rag ?? risk.status ?? "Risk",
         owner: risk.owner ?? risk.stream ?? "-",
-        update: risk.latestUpdate ?? risk.mitigation ?? risk.impact ?? "-",
+        update: meaningfulText(risk.latestUpdate) ?? meaningfulText(risk.impact) ?? meaningfulText(risk.statement) ?? meaningfulText(risk.mitigation) ?? "-",
         dashboardFlag: risk.dashboardFlag,
         kind: "Risk" as const,
       })),
@@ -293,7 +293,7 @@ function weeklyRiskIssueCandidates(tracker?: TrackerData): WeeklyRiskIssueItem[]
         title: issue.title,
         marker: issue.rag ?? issue.priority ?? issue.status ?? "Issue",
         owner: issue.owner ?? issue.stream ?? "-",
-        update: issue.latestUpdate ?? issue.requiredAction ?? issue.impact ?? "-",
+        update: meaningfulText(issue.latestUpdate) ?? meaningfulText(issue.impact) ?? meaningfulText(issue.statement) ?? meaningfulText(issue.requiredAction) ?? "-",
         dashboardFlag: issue.dashboardFlag,
         kind: "Issue" as const,
       })),
@@ -659,8 +659,8 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
     autoTable,
     "Risks / issues",
     y,
-    ["Rating", "Item", "Owner / stream", "Latest update"],
-    risksIssues.map((item) => [item.marker, item.title, item.owner, item.update]),
+    ["Item", "Current context"],
+    risksIssues.map((item) => [item.title, item.update]),
   );
   y = table(
     doc,

@@ -2094,6 +2094,7 @@ type WeeklyRiskIssueItem = {
   id: string;
   title: string;
   meta?: string;
+  context?: string;
   status?: string;
   stream?: string;
   dashboardFlag?: boolean;
@@ -2130,6 +2131,7 @@ function curateWeeklyItems<T>(
   const ordered = entry.order
     .map((id) => allById.get(id))
     .filter((item): item is T => Boolean(item && !hidden.has(idFor(item))));
+  if (entry.order.length) return ordered.slice(0, limit);
   const orderedIds = new Set(ordered.map(idFor));
   const defaults = defaultItems.filter((item) => !hidden.has(idFor(item)) && !orderedIds.has(idFor(item)));
   return [...ordered, ...defaults].slice(0, limit);
@@ -2143,25 +2145,33 @@ function remainingWeeklyItems<T>(allItems: T[], visibleItems: T[], idFor: (item:
 function weeklyRiskIssueCandidates(tracker?: TrackerData): WeeklyRiskIssueItem[] {
   return sortFlaggedFirst([
     ...openRisks(tracker)
-      .map((risk) => ({
-        id: `risk-${risk.id}`,
-        title: risk.title,
-        meta: risk.latestUpdate ?? risk.mitigation ?? risk.impact ?? "",
-        status: risk.rag ?? risk.status,
-        stream: risk.stream,
-        dashboardFlag: risk.dashboardFlag,
-        kind: "Risk" as const,
-      })),
+      .map((risk) => {
+        const context = meaningfulText(risk.latestUpdate) ?? meaningfulText(risk.impact) ?? meaningfulText(risk.statement) ?? meaningfulText(risk.mitigation);
+        return {
+          id: `risk-${risk.id}`,
+          title: risk.title,
+          meta: context ?? "",
+          context,
+          status: risk.rag ?? risk.status,
+          stream: risk.stream,
+          dashboardFlag: risk.dashboardFlag,
+          kind: "Risk" as const,
+        };
+      }),
     ...openIssues(tracker)
-      .map((issue) => ({
-        id: `issue-${issue.id}`,
-        title: issue.title,
-        meta: issue.latestUpdate ?? issue.requiredAction ?? issue.impact ?? "",
-        status: issue.rag ?? issue.priority ?? issue.status,
-        stream: issue.stream,
-        dashboardFlag: issue.dashboardFlag,
-        kind: "Issue" as const,
-      })),
+      .map((issue) => {
+        const context = meaningfulText(issue.latestUpdate) ?? meaningfulText(issue.impact) ?? meaningfulText(issue.statement) ?? meaningfulText(issue.requiredAction);
+        return {
+          id: `issue-${issue.id}`,
+          title: issue.title,
+          meta: context ?? "",
+          context,
+          status: issue.rag ?? issue.priority ?? issue.status,
+          stream: issue.stream,
+          dashboardFlag: issue.dashboardFlag,
+          kind: "Issue" as const,
+        };
+      }),
   ]);
 }
 
@@ -2219,6 +2229,7 @@ function WeeklyExecutiveStatusView({
   const [showStatusSummaryEditor, setShowStatusSummaryEditor] = useState(false);
   const [showNarrativeEditor, setShowNarrativeEditor] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
+  const [sourceSearch, setSourceSearch] = useState("");
   const [dragItem, setDragItem] = useState<WeeklyDragItem | undefined>();
   const ragTone = toneClass(weekly?.overallRag);
   const displayTitle = "Data Asset Foundation Programme";
@@ -2253,15 +2264,22 @@ function WeeklyExecutiveStatusView({
       [section]: transform(weeklyCurationEntry(current, section)),
     }));
   };
-  const removeFromWeeklySection = (section: WeeklyStatusSectionKey, id: string) => {
+  const removeFromWeeklySection = (section: WeeklyStatusSectionKey, id: string, visibleIds: string[]) => {
     updateCurationSection(section, (entry) => ({
-      order: entry.order.filter((item) => item !== id),
+      order: [
+        ...visibleIds.filter((item) => item !== id),
+        ...entry.order.filter((item) => item !== id && !visibleIds.includes(item)),
+      ],
       hidden: entry.hidden.includes(id) ? entry.hidden : [...entry.hidden, id],
     }));
   };
-  const addToWeeklySection = (section: WeeklyStatusSectionKey, id: string) => {
+  const addToWeeklySection = (section: WeeklyStatusSectionKey, id: string, visibleIds: string[] = []) => {
     updateCurationSection(section, (entry) => ({
-      order: [id, ...entry.order.filter((item) => item !== id)],
+      order: [
+        id,
+        ...visibleIds.filter((item) => item !== id),
+        ...entry.order.filter((item) => item !== id && !visibleIds.includes(item)),
+      ],
       hidden: entry.hidden.filter((item) => item !== id),
     }));
   };
@@ -2312,7 +2330,7 @@ function WeeklyExecutiveStatusView({
       >
         <GripVertical size={14} />
       </button>
-      <button type="button" className="weekly-remove-button" onClick={() => removeFromWeeklySection(section, id)} aria-label={`Remove from ${weeklySectionLabels[section]}`}>
+      <button type="button" className="weekly-remove-button" onClick={() => removeFromWeeklySection(section, id, visibleIds)} aria-label={`Remove from ${weeklySectionLabels[section]}`}>
         <X size={14} />
       </button>
     </div>
@@ -2368,7 +2386,7 @@ function WeeklyExecutiveStatusView({
       ? upcomingMilestones.map((item) => lowerItem(formatNumericDate(item.finishDate), item.name, escapeHtml(item.stream ?? item.milestoneLevel ?? "Milestone"))).join("")
       : `<p style="margin:0;color:#5b6960;">No upcoming programme milestones within the selected window.</p>`;
     const risksHtml = risksIssues.length
-      ? risksIssues.map((item) => lowerItem(item.status ?? item.kind, item.title, escapeHtml(item.stream ?? item.meta ?? item.kind))).join("")
+      ? risksIssues.map((item) => lowerItem(item.kind, item.title, escapeHtml(item.context ?? ""))).join("")
       : `<p style="margin:0;color:#5b6960;">No material risks or issues selected for this report.</p>`;
     const decisionsHtml = decisionsNeeded.length
       ? decisionsNeeded.map((decision) => {
@@ -2651,9 +2669,8 @@ function WeeklyExecutiveStatusView({
               return risksIssues.map((item) => (
                 <div className={`weekly-row curated ${dragItem?.id === item.id ? "dragging" : ""}`} key={item.id} {...rowDropHandlers("risksIssues", item.id, visibleIds)}>
                   <div>
-                    <span>{item.status ?? item.kind}</span>
                     <strong>{item.title}</strong>
-                    <em>{item.stream ?? item.meta}</em>
+                    {item.context ? <em>{item.context}</em> : null}
                   </div>
                   {renderControls("risksIssues", item.id, visibleIds)}
                 </div>
@@ -2725,46 +2742,61 @@ function WeeklyExecutiveStatusView({
           <button type="button" className={isToolExpanded("decisions") ? "active" : ""} aria-expanded={isToolExpanded("decisions")} onClick={() => toggleTool("decisions")}>More decisions ({moreDecisions.length})</button>
           <button type="button" className={isToolExpanded("changes") ? "active" : ""} aria-expanded={isToolExpanded("changes")} onClick={() => toggleTool("changes")}>More material changes ({moreChanges.length})</button>
         </div>
+        <label className="weekly-source-search">
+          <span>Search source items</span>
+          <input
+            type="search"
+            value={sourceSearch}
+            onChange={(event) => setSourceSearch(event.target.value)}
+            placeholder="Search title, owner, status, impact or update..."
+          />
+        </label>
         {isToolExpanded("upcoming") ? (
           <WeeklySourceList
             title="More upcoming milestones"
-            items={moreUpcomingMilestones.map((item) => ({ id: item.uid, title: item.name, eyebrow: formatDate(item.finishDate), meta: item.stream ?? item.milestoneLevel ?? "Milestone" }))}
-            onAdd={(id) => addToWeeklySection("milestones", id)}
+            items={moreUpcomingMilestones.map((item) => ({ id: item.uid, title: item.name, eyebrow: formatDate(item.finishDate), meta: item.stream ?? item.milestoneLevel ?? "Milestone", details: milestonePlanStatusLabel(item) }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("milestones", id, upcomingMilestones.map((item) => item.uid))}
           />
         ) : null}
         {isToolExpanded("completed") ? (
           <WeeklySourceList
             title="Completed milestones"
-            items={moreCompletedMilestones.map((item) => ({ id: item.uid, title: item.name, eyebrow: formatDate(item.finishDate), meta: item.stream ?? item.milestoneLevel ?? "Milestone" }))}
-            onAdd={(id) => addToWeeklySection("milestones", id)}
+            items={moreCompletedMilestones.map((item) => ({ id: item.uid, title: item.name, eyebrow: formatDate(item.finishDate), meta: item.stream ?? item.milestoneLevel ?? "Milestone", details: milestonePlanStatusLabel(item) }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("milestones", id, upcomingMilestones.map((item) => item.uid))}
           />
         ) : null}
         {isToolExpanded("risks") ? (
           <WeeklySourceList
             title="More risks"
-            items={moreRisks.map((item) => ({ id: item.id, title: item.title, eyebrow: item.status ?? "Risk", meta: item.stream ?? item.meta ?? "" }))}
-            onAdd={(id) => addToWeeklySection("risksIssues", id)}
+            items={moreRisks.map((item) => ({ id: item.id, title: item.title, eyebrow: item.status ?? "Risk", meta: item.context ?? "", details: item.stream ?? "" }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("risksIssues", id, risksIssues.map((item) => item.id))}
           />
         ) : null}
         {isToolExpanded("issues") ? (
           <WeeklySourceList
             title="More issues"
-            items={moreIssues.map((item) => ({ id: item.id, title: item.title, eyebrow: item.status ?? "Issue", meta: item.stream ?? item.meta ?? "" }))}
-            onAdd={(id) => addToWeeklySection("risksIssues", id)}
+            items={moreIssues.map((item) => ({ id: item.id, title: item.title, eyebrow: item.status ?? "Issue", meta: item.context ?? "", details: item.stream ?? "" }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("risksIssues", id, risksIssues.map((item) => item.id))}
           />
         ) : null}
         {isToolExpanded("decisions") ? (
           <WeeklySourceList
             title="More decisions"
-            items={moreDecisions.map((decision) => ({ id: `decision-${decision.id}`, title: decision.title, eyebrow: formatDateOrText(decision.decisionRequiredBy ?? decision.decisionDate, "Decision date tbc"), meta: decision.decisionMaker ?? decision.owner ?? decision.status ?? "" }))}
-            onAdd={(id) => addToWeeklySection("decisions", id)}
+            items={moreDecisions.map((decision) => ({ id: `decision-${decision.id}`, title: decision.title, eyebrow: formatDateOrText(decision.decisionRequiredBy ?? decision.decisionDate, "Decision date tbc"), meta: decision.decisionMaker ?? decision.owner ?? decision.status ?? "", details: decision.statement ?? decision.latestUpdate ?? "" }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("decisions", id, decisionsNeeded.map((decision) => `decision-${decision.id}`))}
           />
         ) : null}
         {isToolExpanded("changes") ? (
           <WeeklySourceList
             title="More material changes"
-            items={moreChanges.map((change) => ({ id: `change-${change.id}`, title: change.title, eyebrow: formatNumericDate(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised), meta: meaningfulText(change.reportingImpact) ?? meaningfulText(change.currentPosition) ?? meaningfulText(change.impactOnTime) ?? meaningfulText(change.impactOnScope) ?? change.status ?? "" }))}
-            onAdd={(id) => addToWeeklySection("changes", id)}
+            items={moreChanges.map((change) => ({ id: `change-${change.id}`, title: change.title, eyebrow: formatNumericDate(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised), meta: meaningfulText(change.reportingImpact) ?? meaningfulText(change.currentPosition) ?? meaningfulText(change.impactOnTime) ?? meaningfulText(change.impactOnScope) ?? change.status ?? "", details: `${change.previousPosition ?? ""} ${change.currentPosition ?? ""} ${change.latestUpdate ?? ""}` }))}
+            searchQuery={sourceSearch}
+            onAdd={(id) => addToWeeklySection("changes", id, significantChanges.map((change) => `change-${change.id}`))}
           />
         ) : null}
       </section>
@@ -2785,18 +2817,24 @@ function WeeklyExecutiveStatusView({
 function WeeklySourceList({
   title,
   items,
+  searchQuery,
   onAdd,
 }: {
   title: string;
-  items: Array<{ id: string; title: string; eyebrow?: string; meta?: string }>;
+  items: Array<{ id: string; title: string; eyebrow?: string; meta?: string; details?: string }>;
+  searchQuery: string;
   onAdd: (id: string) => void;
 }) {
+  const query = normaliseText(searchQuery);
+  const filteredItems = query
+    ? items.filter((item) => normaliseText(`${item.title} ${item.eyebrow ?? ""} ${item.meta ?? ""} ${item.details ?? ""}`).includes(query))
+    : items;
   return (
     <section className="weekly-source-list">
       <h4>{title}</h4>
-      {items.length ? (
+      {filteredItems.length ? (
         <div>
-          {items.map((item) => (
+          {filteredItems.map((item) => (
             <article className="weekly-source-row" key={item.id}>
               <div>
                 <span>{item.eyebrow ?? "Available"}</span>
@@ -2808,7 +2846,7 @@ function WeeklySourceList({
           ))}
         </div>
       ) : (
-        <p>No additional items available.</p>
+        <p>{items.length ? "No source items match your search." : "No additional items available."}</p>
       )}
     </section>
   );

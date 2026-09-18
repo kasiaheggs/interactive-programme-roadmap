@@ -2361,6 +2361,31 @@ body.executive-export-light .executive-roadmap {
 .weekly-tool-buttons button.active {
   background: rgba(61, 120, 169, 0.14);
 }
+.weekly-source-search {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+.weekly-source-search span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.weekly-source-search input {
+  min-height: 38px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  color: var(--text);
+  background: var(--surface-alt);
+  font: inherit;
+}
+.weekly-source-search input:focus {
+  outline: 2px solid rgba(61, 120, 169, 0.32);
+  border-color: var(--active);
+}
 .weekly-source-list {
   display: grid;
   gap: 10px;
