@@ -547,6 +547,12 @@ function splitDigest(value?: string, limit = 3): string[] {
   return parts.slice(0, limit);
 }
 
+function shortContext(value?: string, maxLength = 180): string | undefined {
+  const text = splitDigest(value, 1)[0] ?? meaningfulText(value);
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3).trim()}...` : text;
+}
+
 function formatDateOrText(value?: string, fallback = "Not set"): string {
   if (!value) return fallback;
   return parseDate(value) ? formatDate(value) : value;
@@ -2391,10 +2397,14 @@ function WeeklyExecutiveStatusView({
     const decisionsHtml = decisionsNeeded.length
       ? decisionsNeeded.map((decision) => {
         const made = isDecisionMadeThisPeriod(decision, weekly);
+        const context = shortContext(decision.statement) ?? shortContext(decision.latestUpdate);
         return lowerItem(
           made ? "Decision made" : "Decision required",
           decision.title,
-          escapeHtml(`${made ? "Decision made by" : "Decision sits with"}: ${decision.decisionMaker ?? decision.owner ?? "Not assigned"}`),
+          [
+            lowerRow(made ? "Decision made by" : "Decision sits with", decision.decisionMaker ?? decision.owner ?? "Not assigned"),
+            context ? `<div style="margin:4px 0 0;">${escapeHtml(context)}</div>` : "",
+          ].join(""),
         );
       }).join("")
       : `<p style="margin:0;color:#5b6960;">No decisions selected for this report.</p>`;
@@ -2685,12 +2695,14 @@ function WeeklyExecutiveStatusView({
               return decisionsNeeded.map((decision) => {
                 const id = `decision-${decision.id}`;
                 const made = isDecisionMadeThisPeriod(decision, weekly);
+                const context = shortContext(decision.statement) ?? shortContext(decision.latestUpdate);
                 return (
                   <div className={`weekly-row curated ${dragItem?.id === id ? "dragging" : ""}`} key={decision.id} {...rowDropHandlers("decisions", id, visibleIds)}>
                     <div className="weekly-decision-row">
                       <span>{made ? "Decision made" : "Decision required"}</span>
                       <strong>{decision.title}</strong>
                       <em>{made ? "Decision made by" : "Decision sits with"}: {decision.decisionMaker ?? decision.owner ?? "Not assigned"}</em>
+                      {context ? <em>{context}</em> : null}
                     </div>
                     {renderControls("decisions", id, visibleIds)}
                   </div>

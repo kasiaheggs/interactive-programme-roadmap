@@ -79,6 +79,12 @@ function splitDigest(value?: string, limit = 3): string[] {
   return parts.slice(0, limit);
 }
 
+function shortContext(value?: string, maxLength = 180): string | undefined {
+  const text = splitDigest(value, 1)[0] ?? meaningfulText(value);
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3).trim()}...` : text;
+}
+
 function formatNumericDate(value?: string, fallback = "Not set"): string {
   const date = parseDate(value);
   if (!date) return value ?? fallback;
@@ -667,14 +673,15 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
     autoTable,
     "Decisions",
     y,
-    ["Type", "Decision", "Decision maker", "Date"],
+    ["Type", "Decision", "Context", "Decision maker"],
     decisionsNeeded.map((decision) => {
       const made = isDecisionMadeThisPeriod(decision, weekly);
+      const context = shortContext(decision.statement) ?? shortContext(decision.latestUpdate) ?? "-";
       return [
       made ? "Decision made" : "Decision required",
       decision.title,
+      context,
       decision.decisionMaker ?? decision.owner ?? "-",
-      formatNumericDate(made ? decision.decisionDate : decision.decisionRequiredBy ?? decision.decisionDate, "-"),
     ];
     }),
   );
