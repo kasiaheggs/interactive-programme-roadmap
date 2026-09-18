@@ -690,13 +690,12 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
     autoTable,
     "Material Changes to Plan",
     y,
-    ["Change", "Was", "Now", "Impact", "Agreed"],
+    ["Change", "Was", "Now", "Impact"],
     significantChanges.map((change) => [
       change.title,
       meaningfulText(change.previousPosition) ?? "-",
       meaningfulText(change.currentPosition) ?? "-",
       meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "-",
-      formatNumericDate(change.changeAgreedEffectiveDate, "-"),
     ]),
   );
 

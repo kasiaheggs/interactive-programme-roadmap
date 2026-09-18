@@ -2416,7 +2416,6 @@ function WeeklyExecutiveStatusView({
           lowerRow("Was", meaningfulText(change.previousPosition) ?? "Not captured"),
           lowerRow("Now", meaningfulText(change.currentPosition) ?? "Not captured"),
           lowerRow("Impact", meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "Not captured"),
-          lowerRow("Agreed", formatNumericDate(change.changeAgreedEffectiveDate, "Not captured")),
         ].join(""),
       )).join("")
       : `<p style="margin:0;color:#5b6960;">No material changes to the programme plan this week.</p>`;
@@ -2725,7 +2724,6 @@ function WeeklyExecutiveStatusView({
                       <em><b>Was:</b> {meaningfulText(change.previousPosition) ?? "Not captured"}</em>
                       <em><b>Now:</b> {meaningfulText(change.currentPosition) ?? "Not captured"}</em>
                       <em><b>Impact:</b> {meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "Not captured"}</em>
-                      <em><b>Agreed:</b> {formatNumericDate(change.changeAgreedEffectiveDate, "Not captured")}</em>
                     </div>
                     {renderControls("changes", id, visibleIds)}
                   </div>
