@@ -23,6 +23,11 @@ export type TeamActionPdfItem = {
   description?: string;
   latestUpdate?: string;
   links?: string;
+  weeklyFocus?: boolean;
+  focusWeekEnding?: string;
+  weeklyOutcome?: string;
+  outcomeWeekEnding?: string;
+  slippageBlockerReason?: string;
 };
 
 type ExportTeamActionsPdfOptions = {
@@ -31,6 +36,14 @@ type ExportTeamActionsPdfOptions = {
   dateWindow: DateWindow;
   ownerName?: string;
   ownerPacks?: Array<{ ownerName: string; items: TeamActionPdfItem[] }>;
+  weeklyFocus?: {
+    weekEnding: string;
+    previousWeekEnding: string;
+    filters: string[];
+    currentItems: TeamActionPdfItem[];
+    previousOutcomeItems: TeamActionPdfItem[];
+    attentionItems: TeamActionPdfItem[];
+  };
 };
 
 type Rgb = [number, number, number];
@@ -55,6 +68,16 @@ function fileSlug(value: string): string {
 
 function normaliseText(value?: string): string {
   return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function formatShortDate(value?: string): string {
+  const date = parseDate(value);
+  if (!date) return value ?? "Not set";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
 }
 
 function isComplete(value?: string): boolean {
@@ -103,6 +126,20 @@ function addFooter(doc: JsPDF) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     doc.setTextColor(...colours.muted);
+    doc.text(`Page ${page} of ${pageCount}`, pageWidth - 12, pageHeight - 6, { align: "right" });
+  }
+}
+
+function addWeeklyFocusFooter(doc: JsPDF, schedule: ProgrammeSchedule, weekEnding: string) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const pageCount = doc.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...colours.muted);
+    doc.text(`Weekly Delivery Focus | Week ending ${formatShortDate(weekEnding)}`, 12, pageHeight - 6);
     doc.text(`Page ${page} of ${pageCount}`, pageWidth - 12, pageHeight - 6, { align: "right" });
   }
 }
@@ -161,6 +198,125 @@ function packRows(items: TeamActionPdfItem[]): TableRow[] {
     item.title,
     item.latestUpdate || item.description || item.links || "",
   ]);
+}
+
+function weeklyPrioritySort(a: TeamActionPdfItem, b: TeamActionPdfItem): number {
+  const rank = (value?: string) => {
+    const text = normaliseText(value);
+    if (text.includes("high")) return 0;
+    if (text.includes("medium")) return 1;
+    if (text.includes("low")) return 2;
+    return 3;
+  };
+  const priority = rank(a.priority) - rank(b.priority);
+  if (priority) return priority;
+  const dueA = parseDate(a.dueDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+  const dueB = parseDate(b.dueDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+  if (dueA !== dueB) return dueA - dueB;
+  return a.title.localeCompare(b.title);
+}
+
+function exportWeeklyFocusPdf(
+  doc: JsPDF,
+  table: AutoTable,
+  schedule: ProgrammeSchedule,
+  config: NonNullable<ExportTeamActionsPdfOptions["weeklyFocus"]>,
+) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  doc.setTextColor(...colours.ink);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text("Weekly Delivery Focus", 12, 13);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(...colours.muted);
+  doc.text(`Week ending: ${formatShortDate(config.weekEnding)}`, 12, 20);
+  doc.text(`Generated: ${formatShortDate(new Date().toISOString())}`, pageWidth - 12, 13, { align: "right" });
+  if (config.filters.length) doc.text(`Filters: ${config.filters.join(" | ")}`, 12, 26, { maxWidth: pageWidth - 24 });
+
+  const outcomeCount = (name: string) => config.previousOutcomeItems.filter((item) => normaliseText(item.weeklyOutcome) === normaliseText(name)).length;
+  const summary = [
+    ["This week's priorities", String(config.currentItems.length)],
+    ["Completed", String(outcomeCount("Completed"))],
+    ["Progressed", String(outcomeCount("Progressed"))],
+    ["Carried forward", String(outcomeCount("Carried forward"))],
+    ["Slipped", String(outcomeCount("Slipped"))],
+  ];
+  table(doc, {
+    startY: config.filters.length ? 31 : 26,
+    margin: { left: 12, right: 12 },
+    body: [summary.map(([label, count]) => `${label}\n${count}`)],
+    theme: "grid",
+    styles: { font: "helvetica", fontSize: 8.4, cellPadding: 3, textColor: colours.ink, lineColor: colours.line, lineWidth: 0.1, halign: "center", valign: "middle", fontStyle: "bold" },
+    columnStyles: { 0: { fillColor: colours.pale }, 1: { fillColor: [238, 248, 242] }, 2: { fillColor: [238, 246, 255] }, 3: { fillColor: [255, 248, 232] }, 4: { fillColor: [255, 238, 238] } },
+  });
+
+  const currentRows = config.currentItems.slice().sort(weeklyPrioritySort).map((item) => [
+    item.title,
+    item.owner ?? "No owner",
+    item.stream ?? "Not set",
+    formatShortDate(item.dueDate),
+    item.displayStatus ?? item.status ?? "Not set",
+    item.priority ?? "Not set",
+  ]);
+  table(doc, {
+    startY: ((doc as JsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 42) + 8,
+    margin: { left: 12, right: 12, bottom: 14 },
+    head: [["This week's priority tasks and milestones", "Owner", "Workstream", "Due date", "Status", "Priority"]],
+    body: currentRows.length ? currentRows : [["No weekly priorities have been recorded for this reporting week.", "", "", "", "", ""]],
+    theme: "grid",
+    showHead: "everyPage",
+    styles: { font: "helvetica", fontSize: 7.2, cellPadding: 2.1, textColor: colours.ink, lineColor: colours.line, lineWidth: 0.1, overflow: "linebreak", valign: "top" },
+    headStyles: { fillColor: colours.deep, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.3 },
+    alternateRowStyles: { fillColor: colours.pale },
+    columnStyles: {
+      0: { cellWidth: 78, fontStyle: "bold" },
+      1: { cellWidth: 32 },
+      2: { cellWidth: 42 },
+      3: { cellWidth: 24, fontStyle: "bold" },
+      4: { cellWidth: 28 },
+      5: { cellWidth: 24, fontStyle: "bold" },
+    },
+  });
+
+  const lowerY = ((doc as JsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY ?? 116) + 8;
+  const previousRows = config.previousOutcomeItems.map((item) => [
+    item.title,
+    item.owner ?? "No owner",
+    item.weeklyOutcome ?? "Not set",
+  ]);
+  table(doc, {
+    startY: lowerY,
+    margin: { left: 12, right: pageWidth / 2 + 3, bottom: 14 },
+    head: [[`Previous week outcomes (${formatShortDate(config.previousWeekEnding)})`, "Owner", "Outcome"]],
+    body: previousRows.length ? previousRows : [["No weekly outcomes have been recorded for the previous reporting period.", "", ""]],
+    theme: "grid",
+    styles: { font: "helvetica", fontSize: 7, cellPadding: 2, textColor: colours.ink, lineColor: colours.line, lineWidth: 0.1, overflow: "linebreak", valign: "top" },
+    headStyles: { fillColor: colours.green, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.1 },
+    columnStyles: { 0: { cellWidth: 67, fontStyle: "bold" }, 1: { cellWidth: 26 }, 2: { cellWidth: 28, fontStyle: "bold" } },
+  });
+
+  const attentionRows = config.attentionItems.map((item) => [
+    item.title,
+    item.owner ?? "No owner",
+    item.slippageBlockerReason || item.latestUpdate || item.description || "Needs attention",
+    formatShortDate(item.dueDate),
+  ]);
+  table(doc, {
+    startY: lowerY,
+    margin: { left: pageWidth / 2 + 3, right: 12, bottom: 14 },
+    head: [["Blocked / needs attention", "Owner", "Reason / blocker", "Due"]],
+    body: attentionRows.length ? attentionRows : [["No current weekly priorities require attention.", "", "", ""]],
+    theme: "grid",
+    styles: { font: "helvetica", fontSize: 7, cellPadding: 2, textColor: colours.ink, lineColor: colours.line, lineWidth: 0.1, overflow: "linebreak", valign: "top" },
+    headStyles: { fillColor: colours.red, textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.1 },
+    columnStyles: { 0: { cellWidth: 45, fontStyle: "bold" }, 1: { cellWidth: 22 }, 2: { cellWidth: 44 }, 3: { cellWidth: 18, fontStyle: "bold" } },
+  });
+
+  addWeeklyFocusFooter(doc, schedule, config.weekEnding);
+  const ownerFilter = config.filters.find((filter) => filter.startsWith("Owner: "))?.replace("Owner: ", "");
+  const ownerPart = ownerFilter ? `_${fileSlug(ownerFilter)}` : "";
+  doc.save(`${fileSlug(schedule.title)}_weekly_focus${ownerPart}_${formatShortDate(config.weekEnding).replace(/\//g, "-")}.pdf`);
 }
 
 function addPersonPack(
@@ -236,8 +392,13 @@ function addPersonPack(
   });
 }
 
-export async function exportTeamActionsPdf({ schedule, items, dateWindow, ownerName, ownerPacks }: ExportTeamActionsPdfOptions) {
+export async function exportTeamActionsPdf({ schedule, items, dateWindow, ownerName, ownerPacks, weeklyFocus }: ExportTeamActionsPdfOptions) {
   const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
+  if (weeklyFocus) {
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+    exportWeeklyFocusPdf(doc, autoTable as AutoTable, schedule, weeklyFocus);
+    return;
+  }
   if (ownerPacks?.length || ownerName) {
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
     const table = autoTable as AutoTable;

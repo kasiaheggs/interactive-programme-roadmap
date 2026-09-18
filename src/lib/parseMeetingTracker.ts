@@ -197,6 +197,11 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
       completionDate: rowDate(row, "Completion date", "Completed date", "Date completed", "Closed date"),
       updateType: rowValue(row, "Update type"),
       latestUpdate: rowValue(row, "Latest update"),
+      weeklyFocus: rowFlag(row, "Weekly Focus"),
+      focusWeekEnding: rowDate(row, "Focus Week Ending"),
+      weeklyOutcome: rowValue(row, "Weekly Outcome"),
+      outcomeWeekEnding: rowDate(row, "Outcome Week Ending"),
+      slippageBlockerReason: rowValue(row, "Slippage / Blocker Reason", "Slippage Blocker Reason", "Blocker Reason"),
     }))
     .filter((item) => item.id || item.title);
 

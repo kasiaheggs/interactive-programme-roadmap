@@ -544,6 +544,16 @@ function formatDateOrText(value?: string, fallback = "Not set"): string {
   return parseDate(value) ? formatDate(value) : value;
 }
 
+function formatNumericDate(value?: string, fallback = "Not set"): string {
+  const date = parseDate(value);
+  if (!date) return value ?? fallback;
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
+}
+
 function weeklyProgrammeTitle(value?: string): string {
   const title = (value ?? "").trim() || "Programme Delivery";
   const withoutVersion = title
@@ -748,6 +758,11 @@ function combineTeamWorkItems(schedule: ProgrammeSchedule, tracker?: TrackerData
     latestUpdate: action.latestUpdate,
     links: [action.id, action.updateType].filter(Boolean).join(" · "),
     dashboardFlag: action.dashboardFlag,
+    weeklyFocus: action.weeklyFocus,
+    focusWeekEnding: action.focusWeekEnding,
+    weeklyOutcome: action.weeklyOutcome,
+    outcomeWeekEnding: action.outcomeWeekEnding,
+    slippageBlockerReason: action.slippageBlockerReason,
   }));
   const projectItems: TeamWorkItem[] = schedule.items
     .filter((item) => !item.isSummary && item.isActive && item.resourceNames?.length)
@@ -895,10 +910,16 @@ type TeamWorkItem = {
   latestUpdate?: string;
   links?: string;
   dashboardFlag?: boolean;
+  weeklyFocus?: boolean;
+  focusWeekEnding?: string;
+  weeklyOutcome?: string;
+  outcomeWeekEnding?: string;
+  slippageBlockerReason?: string;
 };
 
 type TeamStatusFilter = "open" | "due-soon" | "overdue" | "blocked" | "completed";
-type TeamActionScope = "standard" | "last-meeting-actions" | "all-meeting-actions" | "project-tasks";
+type TeamActionScope = "weekly-focus" | "standard" | "last-meeting-actions" | "all-meeting-actions" | "project-tasks";
+type WeeklyFocusQuickFilter = "current" | "completed" | "progressed" | "carried-forward" | "slipped" | "all";
 
 const teamStatusFilters: Array<{ key: TeamStatusFilter; label: string }> = [
   { key: "open", label: "Open" },
@@ -907,6 +928,49 @@ const teamStatusFilters: Array<{ key: TeamStatusFilter; label: string }> = [
   { key: "blocked", label: "Blocked" },
   { key: "completed", label: "Completed" },
 ];
+
+const weeklyOutcomeOptions = ["Completed", "Progressed", "Carried forward", "Slipped"];
+
+function dateKey(value?: string | Date): string | undefined {
+  if (!value) return undefined;
+  const date = value instanceof Date ? value : parseDate(value);
+  return date ? date.toISOString().slice(0, 10) : undefined;
+}
+
+function inputDateFromDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function fridayForDate(date = new Date()): Date {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  const day = result.getDay();
+  const diff = (5 - day + 7) % 7;
+  result.setDate(result.getDate() + diff);
+  return result;
+}
+
+function previousFriday(value: string): Date {
+  const date = parseDate(`${value}T00:00:00`) ?? new Date();
+  return addDays(date, -7);
+}
+
+function priorityRank(value?: string): number {
+  const text = normaliseText(value);
+  if (text.includes("high")) return 0;
+  if (text.includes("medium")) return 1;
+  if (text.includes("low")) return 2;
+  return 3;
+}
+
+function outcomeKey(value?: string): WeeklyFocusQuickFilter | undefined {
+  const text = normaliseText(value);
+  if (text === "completed" || text === "complete") return "completed";
+  if (text === "progressed" || text === "progress") return "progressed";
+  if (text === "carried forward" || text === "carry forward") return "carried-forward";
+  if (text === "slipped" || text === "slip") return "slipped";
+  return undefined;
+}
 
 function normaliseText(value?: string): string {
   return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -2846,18 +2910,119 @@ function TeamActionTrackerView({
   schedule: ProgrammeSchedule;
   tracker?: TrackerData;
   dateWindow: DateWindow;
-  onExportPdf: (items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[] }) => void;
+  onExportPdf: (items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[]; weeklyFocus?: {
+    weekEnding: string;
+    previousWeekEnding: string;
+    filters: string[];
+    currentItems: TeamWorkItem[];
+    previousOutcomeItems: TeamWorkItem[];
+    attentionItems: TeamWorkItem[];
+  } }) => void;
 }) {
   const [statusFilters, setStatusFilters] = useState<TeamStatusFilter[]>(["open", "due-soon", "overdue", "blocked"]);
-  const [actionScope, setActionScope] = useState<TeamActionScope>("standard");
+  const [actionScope, setActionScope] = useState<TeamActionScope>("weekly-focus");
   const [owner, setOwner] = useState("all");
   const [source, setSource] = useState("all");
   const [stream, setStream] = useState("all");
   const [search, setSearch] = useState("");
+  const [weeklyWeekEnding, setWeeklyWeekEnding] = useState(inputDateFromDate(fridayForDate()));
+  const [weeklyPriority, setWeeklyPriority] = useState("all");
+  const [weeklyStatus, setWeeklyStatus] = useState("all");
+  const [weeklyOutcome, setWeeklyOutcome] = useState("all");
+  const [weeklyQuickFilter, setWeeklyQuickFilter] = useState<WeeklyFocusQuickFilter>("current");
+  const [showWeeklyMoreFilters, setShowWeeklyMoreFilters] = useState(false);
+  const [weeklyPackOwner, setWeeklyPackOwner] = useState("all");
+  const [showWeeklyPackPreview, setShowWeeklyPackPreview] = useState(false);
   const [selectedPackOwners, setSelectedPackOwners] = useState<string[]>([]);
   const [selectedMeetingActionIds, setSelectedMeetingActionIds] = useState<string[]>([]);
   const allItems = combineTeamWorkItems(schedule, tracker);
   const meetingActions = allItems.filter((item) => item.source === "Meeting action");
+  const availableWeeklyDates = uniqueSorted([
+    ...meetingActions.map((item) => item.focusWeekEnding ? dateKey(item.focusWeekEnding) : undefined),
+    ...meetingActions.map((item) => item.outcomeWeekEnding ? dateKey(item.outcomeWeekEnding) : undefined),
+    ...(tracker?.weeklySummaries.map((summary) => summary.weekEnding ? dateKey(summary.weekEnding) : undefined) ?? []),
+  ]).sort();
+  useEffect(() => {
+    if (!availableWeeklyDates.length) return;
+    setWeeklyWeekEnding((current) => availableWeeklyDates.includes(current) ? current : availableWeeklyDates[availableWeeklyDates.length - 1]);
+  }, [availableWeeklyDates.join("|")]);
+  const selectedWeekDate = parseDate(`${weeklyWeekEnding}T00:00:00`) ?? fridayForDate();
+  const previousWeekEnding = inputDateFromDate(previousFriday(weeklyWeekEnding));
+  const currentWeeklyPriorities = meetingActions.filter((item) => item.weeklyFocus && dateKey(item.focusWeekEnding) === weeklyWeekEnding);
+  const previousWeeklyOutcomes = meetingActions.filter((item) => outcomeKey(item.weeklyOutcome) && dateKey(item.outcomeWeekEnding) === previousWeekEnding);
+  const weeklyOwners = uniqueSorted([...currentWeeklyPriorities, ...previousWeeklyOutcomes].flatMap((item) => ownerNames(item.owner)).filter((value) => value !== "Unassigned"));
+  const weeklyStreams = uniqueSorted(currentWeeklyPriorities.map((item) => item.stream));
+  const weeklySources = uniqueSorted([...currentWeeklyPriorities, ...previousWeeklyOutcomes].map((item) => item.source));
+  const weeklyPriorities = uniqueSorted(currentWeeklyPriorities.map((item) => item.priority));
+  const weeklyStatuses = uniqueSorted(currentWeeklyPriorities.map((item) => item.status));
+  const weeklyOwnerMatches = (item: TeamWorkItem) => owner === "all" || ownerNames(item.owner).includes(owner);
+  const weeklyCommonFilter = (item: TeamWorkItem, includeOutcomeFilter = false) => {
+    if (!weeklyOwnerMatches(item)) return false;
+    if (stream !== "all" && item.stream !== stream) return false;
+    if (source !== "all" && item.source !== source) return false;
+    if (weeklyPriority !== "all" && item.priority !== weeklyPriority) return false;
+    if (weeklyStatus !== "all" && item.status !== weeklyStatus) return false;
+    if (includeOutcomeFilter && weeklyOutcome !== "all" && item.weeklyOutcome !== weeklyOutcome) return false;
+    if (search && !normaliseText(`${item.title} ${item.description} ${item.latestUpdate} ${item.owner} ${item.stream} ${item.slippageBlockerReason}`).includes(normaliseText(search))) return false;
+    return true;
+  };
+  const weeklyCurrentBase = currentWeeklyPriorities
+    .filter((item) => weeklyCommonFilter(item, false))
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || bySoonest(a.dueDate, b.dueDate) || a.title.localeCompare(b.title));
+  const weeklyCurrentFiltered = weeklyQuickFilter === "current" || weeklyQuickFilter === "all" ? weeklyCurrentBase : [];
+  const weeklyPreviousBase = previousWeeklyOutcomes
+    .filter((item) => weeklyCommonFilter(item, true))
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.title.localeCompare(b.title));
+  const weeklyPreviousFiltered = weeklyQuickFilter === "current"
+    ? weeklyPreviousBase
+    : weeklyPreviousBase.filter((item) => weeklyQuickFilter === "all" || outcomeKey(item.weeklyOutcome) === weeklyQuickFilter);
+  const weeklyAttentionItems = weeklyCurrentFiltered.filter((item) => {
+    const due = parseDate(item.dueDate);
+    return isBlockedStatus(item.status) ||
+      Boolean(due && due < selectedWeekDate && !isCompleteStatus(item.status)) ||
+      Boolean(meaningfulText(item.slippageBlockerReason));
+  });
+  const weeklyHighCount = weeklyCurrentBase.filter((item) => normaliseText(item.priority).includes("high")).length;
+  const weeklyMediumCount = weeklyCurrentBase.filter((item) => normaliseText(item.priority).includes("medium")).length;
+  const weeklyLowCount = weeklyCurrentBase.filter((item) => normaliseText(item.priority).includes("low")).length;
+  const weeklyOutcomeCount = (label: string) => weeklyPreviousBase.filter((item) => normaliseText(item.weeklyOutcome) === normaliseText(label)).length;
+  const focusAreas = Array.from(weeklyCurrentBase.reduce((map, item) => {
+    const key = item.stream ?? "No workstream";
+    map.set(key, (map.get(key) ?? 0) + 1);
+    return map;
+  }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const activeWeeklyFilters = [
+    owner !== "all" ? `Owner: ${owner}` : undefined,
+    stream !== "all" ? `Workstream: ${stream}` : undefined,
+    source !== "all" ? `Type: ${source}` : undefined,
+    weeklyPriority !== "all" ? `Priority: ${weeklyPriority}` : undefined,
+    weeklyStatus !== "all" ? `Status: ${weeklyStatus}` : undefined,
+    weeklyOutcome !== "all" ? `Weekly outcome: ${weeklyOutcome}` : undefined,
+    search ? `Search: ${search}` : undefined,
+  ].filter((item): item is string => Boolean(item));
+  const weeklyPackOwners = uniqueSorted([
+    ...weeklyCurrentBase.flatMap((item) => ownerNames(item.owner)),
+    ...weeklyPreviousBase.flatMap((item) => ownerNames(item.owner)),
+  ].filter((value) => value !== "Unassigned"));
+  useEffect(() => {
+    setWeeklyPackOwner((current) => current !== "all" && weeklyPackOwners.includes(current) ? current : weeklyPackOwners[0] ?? "all");
+  }, [weeklyPackOwners.join("|")]);
+  const weeklyDateIndex = availableWeeklyDates.indexOf(weeklyWeekEnding);
+  const setAdjacentWeeklyDate = (direction: -1 | 1) => {
+    if (weeklyDateIndex < 0) return;
+    const next = availableWeeklyDates[weeklyDateIndex + direction];
+    if (next) setWeeklyWeekEnding(next);
+  };
+  const clearWeeklyFilters = () => {
+    setOwner("all");
+    setSource("all");
+    setStream("all");
+    setSearch("");
+    setWeeklyPriority("all");
+    setWeeklyStatus("all");
+    setWeeklyOutcome("all");
+    setWeeklyQuickFilter("current");
+  };
   const lastMeetingDate = latestMeetingActionDate(allItems);
   const lastMeetingActions = lastMeetingDate ? meetingActions.filter((item) => sameCalendarDate(item.meetingDate ?? item.loggedDate, lastMeetingDate)) : [];
   const actionPacks = buildTeamActionPacks(allItems);
@@ -2920,20 +3085,51 @@ function TeamActionTrackerView({
     setSelectedMeetingActionIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
   const actionPackJump = () => document.getElementById("team-action-packs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const isCurrentWeeklyPriority = (item: TeamWorkItem) => Boolean(item.weeklyFocus && dateKey(item.focusWeekEnding) === weeklyWeekEnding);
+  const weeklyItemsForOwner = (name: string, items: TeamWorkItem[]) => items.filter((item) => ownerNames(item.owner).includes(name));
+  const selectedWeeklyPackCurrent = weeklyPackOwner === "all" ? [] : weeklyItemsForOwner(weeklyPackOwner, weeklyCurrentBase);
+  const selectedWeeklyPackAttention = weeklyPackOwner === "all" ? [] : weeklyItemsForOwner(weeklyPackOwner, weeklyAttentionItems);
+  const selectedWeeklyPackPrevious = weeklyPackOwner === "all" ? [] : weeklyItemsForOwner(weeklyPackOwner, weeklyPreviousBase);
+  const exportSelectedWeeklyPack = () => {
+    if (weeklyPackOwner === "all") return;
+    onExportPdf(selectedWeeklyPackCurrent, {
+      weeklyFocus: {
+        weekEnding: weeklyWeekEnding,
+        previousWeekEnding,
+        filters: [...activeWeeklyFilters.filter((filter) => !filter.startsWith("Owner: ")), `Owner: ${weeklyPackOwner}`],
+        currentItems: selectedWeeklyPackCurrent,
+        previousOutcomeItems: selectedWeeklyPackPrevious,
+        attentionItems: selectedWeeklyPackAttention,
+      },
+    });
+  };
+  const exportWeeklyFocus = () => onExportPdf(weeklyCurrentFiltered, {
+    weeklyFocus: {
+      weekEnding: weeklyWeekEnding,
+      previousWeekEnding,
+      filters: activeWeeklyFilters,
+      currentItems: weeklyCurrentFiltered,
+      previousOutcomeItems: weeklyPreviousFiltered,
+      attentionItems: weeklyAttentionItems,
+    },
+  });
 
   return (
     <>
       <div id="team-actions-export" className="team-actions-view">
         <PageIntro title="Team Action Tracker" tracker={tracker}>A combined operational view of meeting actions and assigned Project plan tasks or milestones.</PageIntro>
-        <StatGrid cards={[
+        {actionScope !== "weekly-focus" ? <StatGrid cards={[
           ["Open / needs doing", counts.open.toString()],
           ["Due soon", counts.dueSoon.toString(), counts.dueSoon ? "warn" : ""],
           ["Late", counts.overdue.toString(), counts.overdue ? "warn" : ""],
           ["Completed", counts.completed.toString()],
-        ]} />
+        ]} /> : null}
 
         <section className="team-action-controls">
           <div className="team-quick-tabs" aria-label="Meeting action quick views">
+            <button type="button" className={actionScope === "weekly-focus" ? "active" : ""} aria-pressed={actionScope === "weekly-focus"} onClick={() => setActionScope("weekly-focus")}>
+              Weekly Focus
+            </button>
             <button type="button" className={actionScope === "standard" ? "active" : ""} aria-pressed={actionScope === "standard"} onClick={() => setActionScope("standard")}>
               Standard view
             </button>
@@ -2950,67 +3146,310 @@ function TeamActionTrackerView({
               Action pack selection
             </button>
           </div>
-          <div className="tabs" aria-label="Action status filters">
-            {teamStatusFilters.map(({ key, label }) => (
-              <button
-                type="button"
-                className={statusFilters.includes(key) ? "active" : ""}
-                aria-pressed={statusFilters.includes(key)}
-                onClick={() => toggleStatusFilter(key)}
-                key={key}
-              >
-                {label}
-              </button>
-            ))}
-            <button type="button" className={!statusFilters.length ? "active" : ""} aria-pressed={!statusFilters.length} onClick={() => setStatusFilters([])}>All</button>
-          </div>
-          {actionScope === "last-meeting-actions" ? (
-            <div className="team-meeting-action-selector">
-              <strong>{selectedMeetingActionIds.length} of {lastMeetingActions.length} last meeting actions selected</strong>
-              <span>
-                <button type="button" onClick={() => setSelectedMeetingActionIds(lastMeetingActions.map((item) => item.id))}>Select all</button>
-                <button type="button" onClick={() => setSelectedMeetingActionIds([])}>Clear</button>
-              </span>
+          {actionScope === "weekly-focus" ? (
+            <div className="weekly-focus-shell">
+              <div className="weekly-focus-header">
+                <div>
+                  <h2>Weekly Focus</h2>
+                  <p>Agreed weekly delivery priorities, progress and exceptions across programme actions.</p>
+                </div>
+                <div className="weekly-date-controls">
+                  <label>
+                    Show priorities for week ending
+                    <input type="date" value={weeklyWeekEnding} onChange={(event) => setWeeklyWeekEnding(event.target.value)} />
+                  </label>
+                  <button type="button" aria-label="Previous week" disabled={weeklyDateIndex <= 0} onClick={() => setAdjacentWeeklyDate(-1)}><ChevronRight size={16} className="chevron-left" /></button>
+                  <button type="button" aria-label="Next week" disabled={weeklyDateIndex < 0 || weeklyDateIndex >= availableWeeklyDates.length - 1} onClick={() => setAdjacentWeeklyDate(1)}><ChevronRight size={16} /></button>
+                  <button type="button" className="download-action secondary" onClick={exportWeeklyFocus}>
+                    <Download size={15} />
+                    Download A4 Weekly Focus
+                  </button>
+                </div>
+              </div>
+
+              <div className="weekly-kpi-grid">
+                <article className="weekly-kpi-card current">
+                  <Target size={26} />
+                  <div><span>This week's priorities</span><strong>{weeklyCurrentBase.length}</strong><small>{weeklyHighCount} High · {weeklyMediumCount} Medium · {weeklyLowCount} Low</small></div>
+                </article>
+                <article className="weekly-kpi-card completed">
+                  <CheckCircle2 size={26} />
+                  <div><span>Completed</span><strong>{weeklyOutcomeCount("Completed")}</strong><small>from week ending {formatNumericDate(previousWeekEnding)}</small></div>
+                </article>
+                <article className="weekly-kpi-card progressed">
+                  <ChevronRight size={26} />
+                  <div><span>Progressed</span><strong>{weeklyOutcomeCount("Progressed")}</strong><small>from week ending {formatNumericDate(previousWeekEnding)}</small></div>
+                </article>
+                <article className="weekly-kpi-card carried">
+                  <Clock size={26} />
+                  <div><span>Carried forward</span><strong>{weeklyOutcomeCount("Carried forward")}</strong><small>from week ending {formatNumericDate(previousWeekEnding)}</small></div>
+                </article>
+                <article className="weekly-kpi-card slipped">
+                  <AlertTriangle size={26} />
+                  <div><span>Slipped</span><strong>{weeklyOutcomeCount("Slipped")}</strong><small>from week ending {formatNumericDate(previousWeekEnding)}</small></div>
+                </article>
+              </div>
+
+              <div className="weekly-filter-grid">
+                <label>
+                  Owner
+                  <select value={owner} onChange={(event) => setOwner(event.target.value)}>
+                    <option value="all">All owners</option>
+                    {weeklyOwners.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Workstream
+                  <select value={stream} onChange={(event) => setStream(event.target.value)}>
+                    <option value="all">All workstreams</option>
+                    {weeklyStreams.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Type
+                  <select value={source} onChange={(event) => setSource(event.target.value)}>
+                    <option value="all">All types</option>
+                    {weeklySources.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Priority
+                  <select value={weeklyPriority} onChange={(event) => setWeeklyPriority(event.target.value)}>
+                    <option value="all">All priorities</option>
+                    {weeklyPriorities.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="weekly-search">
+                  Search
+                  <span>
+                    <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Action, task, milestone..." />
+                    <Search size={17} />
+                  </span>
+                </label>
+                <button type="button" className="weekly-filter-button" onClick={() => setShowWeeklyMoreFilters((current) => !current)}>
+                  <Filter size={15} />
+                  More filters
+                </button>
+                <button type="button" className="weekly-filter-button" onClick={clearWeeklyFilters}>Clear filters</button>
+              </div>
+              {showWeeklyMoreFilters ? (
+                <div className="weekly-extra-filters">
+                  <label>
+                    Status
+                    <select value={weeklyStatus} onChange={(event) => setWeeklyStatus(event.target.value)}>
+                      <option value="all">All statuses</option>
+                      {weeklyStatuses.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Weekly outcome
+                    <select value={weeklyOutcome} onChange={(event) => setWeeklyOutcome(event.target.value)}>
+                      <option value="all">All outcomes</option>
+                      {weeklyOutcomeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+              <div className="tabs weekly-tabs" aria-label="Weekly focus filters">
+                {[
+                  ["current", "Current priorities"],
+                  ["completed", "Completed"],
+                  ["progressed", "Progressed"],
+                  ["carried-forward", "Carried forward"],
+                  ["slipped", "Slipped"],
+                  ["all", "All"],
+                ].map(([key, label]) => (
+                  <button key={key} type="button" className={weeklyQuickFilter === key ? "active" : ""} aria-pressed={weeklyQuickFilter === key} onClick={() => setWeeklyQuickFilter(key as WeeklyFocusQuickFilter)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-          ) : null}
-          {actionScope !== "standard" && actionScope !== "project-tasks" ? (
-            <p className="team-scope-note">
-              Showing {actionScope === "last-meeting-actions" ? `meeting actions logged on ${formatDate(lastMeetingDate)}` : "all meeting actions"}; status filters still apply inside this quick view.
-            </p>
-          ) : actionScope === "project-tasks" ? (
-            <p className="team-scope-note">
-              Showing assigned Project plan tasks; status and reporting date filters still apply.
-            </p>
-          ) : null}
-          <div className="team-filter-grid">
-            <label>
-              Owner
-              <select value={owner} onChange={(event) => setOwner(event.target.value)}>
-                <option value="all">All owners</option>
-                {owners.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-            <label>
-              Source
-              <select value={source} onChange={(event) => setSource(event.target.value)}>
-                <option value="all">All sources</option>
-                {sources.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-            <label>
-              Workstream
-              <select value={stream} onChange={(event) => setStream(event.target.value)}>
-                <option value="all">All workstreams</option>
-                {streams.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-            <label>
-              Search
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Action, task, owner..." />
-            </label>
-          </div>
+          ) : (
+            <>
+              <div className="tabs" aria-label="Action status filters">
+                {teamStatusFilters.map(({ key, label }) => (
+                  <button
+                    type="button"
+                    className={statusFilters.includes(key) ? "active" : ""}
+                    aria-pressed={statusFilters.includes(key)}
+                    onClick={() => toggleStatusFilter(key)}
+                    key={key}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <button type="button" className={!statusFilters.length ? "active" : ""} aria-pressed={!statusFilters.length} onClick={() => setStatusFilters([])}>All</button>
+              </div>
+              {actionScope === "last-meeting-actions" ? (
+                <div className="team-meeting-action-selector">
+                  <strong>{selectedMeetingActionIds.length} of {lastMeetingActions.length} last meeting actions selected</strong>
+                  <span>
+                    <button type="button" onClick={() => setSelectedMeetingActionIds(lastMeetingActions.map((item) => item.id))}>Select all</button>
+                    <button type="button" onClick={() => setSelectedMeetingActionIds([])}>Clear</button>
+                  </span>
+                </div>
+              ) : null}
+              {actionScope !== "standard" && actionScope !== "project-tasks" ? (
+                <p className="team-scope-note">
+                  Showing {actionScope === "last-meeting-actions" ? `meeting actions logged on ${formatDate(lastMeetingDate)}` : "all meeting actions"}; status filters still apply inside this quick view.
+                </p>
+              ) : actionScope === "project-tasks" ? (
+                <p className="team-scope-note">
+                  Showing assigned Project plan tasks; status and reporting date filters still apply.
+                </p>
+              ) : null}
+              <div className="team-filter-grid">
+                <label>
+                  Owner
+                  <select value={owner} onChange={(event) => setOwner(event.target.value)}>
+                    <option value="all">All owners</option>
+                    {owners.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Source
+                  <select value={source} onChange={(event) => setSource(event.target.value)}>
+                    <option value="all">All sources</option>
+                    {sources.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Workstream
+                  <select value={stream} onChange={(event) => setStream(event.target.value)}>
+                    <option value="all">All workstreams</option>
+                    {streams.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Search
+                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Action, task, owner..." />
+                </label>
+              </div>
+            </>
+          )}
         </section>
 
+        {actionScope === "weekly-focus" ? (
+          <section className="weekly-focus-content">
+            <article className="weekly-table-card priority-table">
+              <header>
+                <div>
+                  <h3>This week's priority tasks and milestones</h3>
+                  <p>Agreed delivery focus for the week ending {formatNumericDate(weeklyWeekEnding)}.</p>
+                </div>
+                <button className="download-action secondary" type="button" onClick={() => downloadTeamActionsCsv(weeklyCurrentFiltered, schedule)}>
+                  <Download size={15} />
+                  Export to CSV
+                </button>
+              </header>
+              <table className="weekly-table">
+                <thead>
+                  <tr>
+                    <th>Action / task / milestone</th>
+                    <th>Workstream</th>
+                    <th>Owner</th>
+                    <th>Due date</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Priority week</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weeklyCurrentFiltered.slice(0, 8).map((item) => (
+                    <tr key={`weekly-current-${item.id}`}>
+                      <td><strong>{item.title}</strong></td>
+                      <td>{item.stream ?? "Not set"}</td>
+                      <td>{item.owner ?? "No owner"}</td>
+                      <td>{formatNumericDate(item.dueDate)}</td>
+                      <td><span className={`weekly-status-chip ${actionStatusGroup(item)}`}>{statusLabel(item)}</span></td>
+                      <td><span className={`weekly-priority-chip ${normaliseText(item.priority) || "unset"}`}>{item.priority ?? "Not set"}</span></td>
+                      <td>{formatNumericDate(item.focusWeekEnding)}</td>
+                    </tr>
+                  ))}
+                  {!weeklyCurrentFiltered.length ? <tr><td colSpan={7}>No weekly priorities found for this week and filter set.</td></tr> : null}
+                </tbody>
+              </table>
+              {weeklyCurrentFiltered.length > 8 ? <p className="weekly-table-note">Showing 8 of {weeklyCurrentFiltered.length} priority items. The PDF includes all filtered items.</p> : null}
+            </article>
+
+            <article className="weekly-table-card focus-areas">
+              <h3>Key focus areas this week</h3>
+              <p>Current priorities grouped by workstream.</p>
+              <div className="weekly-focus-area-list">
+                {focusAreas.map(([name, count]) => (
+                  <div key={name}>
+                    <strong>{name}</strong>
+                    <em>{count}</em>
+                  </div>
+                ))}
+                {!focusAreas.length ? <p>No workstream focus areas found.</p> : null}
+              </div>
+            </article>
+
+            <article className="weekly-table-card attention">
+              <header>
+                <div>
+                  <h3>Blocked / needs attention</h3>
+                  <p>Current weekly priorities with blockers, late due dates or a slippage reason.</p>
+                </div>
+              </header>
+              <table className="weekly-table compact">
+                <thead>
+                  <tr>
+                    <th>Action / task / milestone</th>
+                    <th>Owner</th>
+                    <th>Reason / blocker</th>
+                    <th>Due date</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weeklyAttentionItems.slice(0, 8).map((item) => (
+                    <tr key={`weekly-attention-${item.id}`}>
+                      <td><strong>{item.title}</strong></td>
+                      <td>{item.owner ?? "No owner"}</td>
+                      <td>{item.slippageBlockerReason || item.latestUpdate || item.description || "Needs attention"}</td>
+                      <td>{formatNumericDate(item.dueDate)}</td>
+                      <td><span className={`weekly-status-chip ${actionStatusGroup(item)}`}>{statusLabel(item)}</span></td>
+                    </tr>
+                  ))}
+                  {!weeklyAttentionItems.length ? <tr><td colSpan={5}>No current weekly priorities need attention.</td></tr> : null}
+                </tbody>
+              </table>
+            </article>
+
+            <article className="weekly-table-card">
+              <header>
+                <div>
+                  <h3>Previous week outcomes</h3>
+                  <p>Outcome of priorities reviewed for the week ending {formatNumericDate(previousWeekEnding)}.</p>
+                </div>
+              </header>
+              <table className="weekly-table compact">
+                <thead>
+                  <tr>
+                    <th>Action / task / milestone</th>
+                    <th>Owner</th>
+                    <th>Weekly outcome</th>
+                    <th>Outcome week</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weeklyPreviousFiltered.slice(0, 8).map((item) => (
+                    <tr key={`weekly-previous-${item.id}`}>
+                      <td><strong>{item.title}</strong></td>
+                      <td>{item.owner ?? "No owner"}</td>
+                      <td><span className={`weekly-outcome-chip ${outcomeKey(item.weeklyOutcome) ?? "all"}`}>{item.weeklyOutcome}</span></td>
+                      <td>{formatNumericDate(item.outcomeWeekEnding)}</td>
+                    </tr>
+                  ))}
+                  {!weeklyPreviousFiltered.length ? <tr><td colSpan={4}>No previous week outcomes found for this filter set.</td></tr> : null}
+                </tbody>
+              </table>
+            </article>
+          </section>
+        ) : (
         <section className="team-action-list">
           {filtered.map((item) => {
             const group = actionStatusGroup(item);
@@ -3051,7 +3490,85 @@ function TeamActionTrackerView({
           })}
           {!filtered.length ? <article className="empty-panel"><h2>No actions found</h2><p>Adjust the status, owner, source, workstream or date window filters.</p></article> : null}
         </section>
+        )}
 
+        {actionScope === "weekly-focus" ? (
+          <section className="team-action-packs weekly-priority-packs">
+            <div className="team-action-packs-header">
+              <div>
+                <span className="snapshot-eyebrow">Weekly Focus</span>
+                <h2>Weekly priority action packs</h2>
+                <p>Select one owner and download a person-specific weekly priority pack. This uses only weekly priorities and weekly outcomes, not the full action tracker.</p>
+              </div>
+              <div className="weekly-pack-actions">
+                <label>
+                  Owner
+                  <select value={weeklyPackOwner} onChange={(event) => setWeeklyPackOwner(event.target.value)} disabled={!weeklyPackOwners.length}>
+                    {!weeklyPackOwners.length ? <option value="all">No owners found</option> : null}
+                    {weeklyPackOwners.map((name) => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </label>
+                <button className="download-action secondary" type="button" onClick={() => setShowWeeklyPackPreview((current) => !current)} disabled={weeklyPackOwner === "all"}>
+                  {showWeeklyPackPreview ? "Hide preview" : "Show preview"}
+                </button>
+                <button className="download-action" type="button" onClick={exportSelectedWeeklyPack} disabled={weeklyPackOwner === "all"}>
+                  <Download size={15} />
+                  Download A4 PDF
+                </button>
+              </div>
+            </div>
+            {weeklyPackOwner !== "all" ? (
+              <div className="team-pack-counts weekly-pack-summary">
+                <span><strong>{selectedWeeklyPackCurrent.length}</strong> Weekly priorities</span>
+                <span><strong>{selectedWeeklyPackAttention.length}</strong> Needs attention</span>
+                <span><strong>{selectedWeeklyPackPrevious.length}</strong> Previous outcomes</span>
+              </div>
+            ) : null}
+            {showWeeklyPackPreview && weeklyPackOwner !== "all" ? (
+              <article className="team-action-pack-card weekly-pack-preview">
+                <table className="team-pack-table">
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Priority action</th>
+                      <th>Status / outcome</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="team-pack-section-row"><td colSpan={3}>This week</td></tr>
+                    {selectedWeeklyPackCurrent.slice(0, 5).map((item) => (
+                      <tr key={`weekly-current-pack-${weeklyPackOwner}-${item.id}`}>
+                        <td>{formatNumericDate(item.dueDate)}</td>
+                        <td><strong>{item.title}</strong><span>{item.stream ?? "No workstream"}</span></td>
+                        <td>{statusLabel(item)}</td>
+                      </tr>
+                    ))}
+                    {!selectedWeeklyPackCurrent.length ? <tr><td colSpan={3}>No weekly priorities for this person.</td></tr> : null}
+                    <tr className="team-pack-section-row"><td colSpan={3}>Blocked / slipped</td></tr>
+                    {selectedWeeklyPackAttention.slice(0, 4).map((item) => (
+                      <tr key={`weekly-attention-pack-${weeklyPackOwner}-${item.id}`}>
+                        <td>{formatNumericDate(item.dueDate)}</td>
+                        <td><strong>{item.title}</strong><span>{item.slippageBlockerReason || item.latestUpdate || "Needs attention"}</span></td>
+                        <td>{statusLabel(item)}</td>
+                      </tr>
+                    ))}
+                    {!selectedWeeklyPackAttention.length ? <tr><td colSpan={3}>Nothing blocked or slipped for this week.</td></tr> : null}
+                    <tr className="team-pack-section-row"><td colSpan={3}>Previous outcome</td></tr>
+                    {selectedWeeklyPackPrevious.slice(0, 4).map((item) => (
+                      <tr key={`weekly-previous-pack-${weeklyPackOwner}-${item.id}`}>
+                        <td>{formatNumericDate(item.outcomeWeekEnding)}</td>
+                        <td><strong>{item.title}</strong><span>{item.weeklyOutcome ?? "Outcome not set"}</span></td>
+                        <td>{item.weeklyOutcome ?? "Not set"}</td>
+                      </tr>
+                    ))}
+                    {!selectedWeeklyPackPrevious.length ? <tr><td colSpan={3}>No previous outcomes recorded for this person.</td></tr> : null}
+                  </tbody>
+                </table>
+              </article>
+            ) : null}
+            {!weeklyPackOwners.length ? <article className="empty-panel"><h2>No weekly priority packs</h2><p>No people have weekly priorities or outcomes for this week and filter set.</p></article> : null}
+          </section>
+        ) : (
         <section id="team-action-packs" className="team-action-packs">
           <div className="team-action-packs-header">
             <div>
@@ -3089,7 +3606,9 @@ function TeamActionTrackerView({
             </div>
           ) : null}
           <div className="team-action-pack-grid">
-            {selectedActionPacks.map((pack) => (
+            {selectedActionPacks.map((pack) => {
+              const packWeeklyPriorities = pack.items.filter(isCurrentWeeklyPriority);
+              return (
               <article className="team-action-pack-card" key={pack.ownerName}>
                 <header>
                   <div>
@@ -3102,6 +3621,7 @@ function TeamActionTrackerView({
                   </button>
                 </header>
                 <div className="team-pack-counts">
+                  <span><strong>{packWeeklyPriorities.length}</strong> Weekly priorities</span>
                   <span><strong>{pack.attentionItems.length}</strong> Due soon / attention</span>
                   <span><strong>{pack.upcomingItems.length}</strong> Upcoming</span>
                 </div>
@@ -3118,7 +3638,7 @@ function TeamActionTrackerView({
                     {(pack.attentionItems.length ? pack.attentionItems : []).slice(0, 5).map((item) => (
                       <tr key={`attention-${pack.ownerName}-${item.id}`}>
                         <td>{formatDate(item.dueDate)}</td>
-                        <td><strong>{item.title}</strong><span>{statusLabel(item)}</span></td>
+                        <td><strong>{item.title}</strong>{isCurrentWeeklyPriority(item) ? <small className="weekly-priority-badge">Weekly priority</small> : null}<span>{statusLabel(item)}</span></td>
                         <td>{item.source}</td>
                       </tr>
                     ))}
@@ -3127,7 +3647,7 @@ function TeamActionTrackerView({
                     {(pack.upcomingItems.length ? pack.upcomingItems : []).slice(0, 5).map((item) => (
                       <tr key={`upcoming-${pack.ownerName}-${item.id}`}>
                         <td>{formatDate(item.dueDate)}</td>
-                        <td><strong>{item.title}</strong><span>{item.stream ?? "No workstream"}</span></td>
+                        <td><strong>{item.title}</strong>{isCurrentWeeklyPriority(item) ? <small className="weekly-priority-badge">Weekly priority</small> : null}<span>{item.stream ?? "No workstream"}</span></td>
                         <td>{item.source}</td>
                       </tr>
                     ))}
@@ -3136,13 +3656,15 @@ function TeamActionTrackerView({
                 </table>
                 {pack.items.length > 10 ? <p className="team-pack-note">Preview shows the first 10 items; the PDF includes all active assigned items for {pack.ownerName}.</p> : null}
               </article>
-            ))}
+              );
+            })}
             {!actionPacks.length ? <article className="empty-panel"><h2>No active assigned actions</h2><p>Import a tracker or Project plan with open assigned actions to create person packs.</p></article> : null}
             {actionPacks.length && !selectedActionPacks.length ? <article className="empty-panel"><h2>No people selected</h2><p>Select one or more people above to preview their action pack or download the bundled A4 PDF.</p></article> : null}
           </div>
         </section>
+        )}
       </div>
-      <div className="snapshot-actions">
+      {actionScope !== "weekly-focus" ? <div className="snapshot-actions">
         <button className="download-action" type="button" onClick={() => onExportPdf(filtered)}>
           <Download size={15} />
           Download A4 Actions PDF
@@ -3151,7 +3673,7 @@ function TeamActionTrackerView({
           <Download size={15} />
           Download CSV
         </button>
-      </div>
+      </div> : null}
     </>
   );
 }
@@ -3413,7 +3935,14 @@ function ReportingContent({
   weeklyStatusCuration: WeeklyStatusCuration;
   onUpdateWeeklyStatusCuration: (updater: (current: WeeklyStatusCuration) => WeeklyStatusCuration) => void;
   onExportWeeklyStatusPdf: () => void;
-  onExportTeamActionsPdf: (items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[] }) => void;
+  onExportTeamActionsPdf: (items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[]; weeklyFocus?: {
+    weekEnding: string;
+    previousWeekEnding: string;
+    filters: string[];
+    currentItems: TeamWorkItem[];
+    previousOutcomeItems: TeamWorkItem[];
+    attentionItems: TeamWorkItem[];
+  } }) => void;
 }) {
   if (page === "home") return <HomeDashboard schedule={schedule} tracker={tracker} dateWindow={dateWindow} />;
   if (page === "ceo") return (
@@ -3720,7 +4249,14 @@ function App() {
     }
   }
 
-  async function exportTeamActionsPdf(items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[] }) {
+  async function exportTeamActionsPdf(items: TeamWorkItem[], options?: { ownerName?: string; ownerPacks?: TeamActionPack[]; weeklyFocus?: {
+    weekEnding: string;
+    previousWeekEnding: string;
+    filters: string[];
+    currentItems: TeamWorkItem[];
+    previousOutcomeItems: TeamWorkItem[];
+    attentionItems: TeamWorkItem[];
+  } }) {
     setError(undefined);
     const toPdfItem = (item: TeamWorkItem) => ({
       ...item,
@@ -3736,6 +4272,14 @@ function App() {
           ownerName: pack.ownerName,
           items: pack.items.map(toPdfItem),
         })),
+        weeklyFocus: options?.weeklyFocus ? {
+          weekEnding: options.weeklyFocus.weekEnding,
+          previousWeekEnding: options.weeklyFocus.previousWeekEnding,
+          filters: options.weeklyFocus.filters,
+          currentItems: options.weeklyFocus.currentItems.map(toPdfItem),
+          previousOutcomeItems: options.weeklyFocus.previousOutcomeItems.map(toPdfItem),
+          attentionItems: options.weeklyFocus.attentionItems.map(toPdfItem),
+        } : undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "The Team Action Tracker PDF could not be generated.");

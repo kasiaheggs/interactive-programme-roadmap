@@ -83,6 +83,11 @@ export type TrackerAction = {
   completionDate?: string;
   updateType?: string;
   latestUpdate?: string;
+  weeklyFocus?: boolean;
+  focusWeekEnding?: string;
+  weeklyOutcome?: string;
+  outcomeWeekEnding?: string;
+  slippageBlockerReason?: string;
 };
 
 export type TrackerDecision = {
