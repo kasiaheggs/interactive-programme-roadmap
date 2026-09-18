@@ -225,10 +225,6 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
       status: rowValue(row, "Status"),
       updateType: rowValue(row, "Update type"),
       latestUpdate: rowValue(row, "Latest update"),
-      previousPosition: rowValue(row, "Previous position"),
-      currentPosition: rowValue(row, "Current position"),
-      reportingImpact: rowValue(row, "Reporting impact"),
-      changeAgreedEffectiveDate: rowDate(row, "Change agreed / effective date", "Change agreed effective date"),
     }))
     .filter((item) => item.id || item.title);
 
@@ -253,6 +249,10 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
       status: rowValue(row, "Status"),
       updateType: rowValue(row, "Update type"),
       latestUpdate: rowValue(row, "Latest update"),
+      previousPosition: rowValue(row, "Previous position"),
+      currentPosition: rowValue(row, "Current position"),
+      reportingImpact: rowValue(row, "Reporting impact"),
+      changeAgreedEffectiveDate: rowDate(row, "Change agreed / effective date", "Change agreed effective date"),
     }))
     .filter((item) => item.id || item.title);
 
