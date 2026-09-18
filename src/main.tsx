@@ -2364,15 +2364,15 @@ function WeeklyExecutiveStatusView({
     };
     const emailRagStyle = emailRagStyles[ragTone];
     const bulletList = (items: string[], empty: string) => items.length
-      ? `<ul style="margin:8px 0 0 18px;padding:0;">${items.map((item) => `<li style="margin:0 0 6px;">${escapeHtml(item)}</li>`).join("")}</ul>`
-      : `<p style="margin:8px 0 0;color:#5b6960;">${escapeHtml(empty)}</p>`;
+      ? `<ul style="margin:6px 0 0 16px;padding:0;font-size:10px;line-height:1.3;">${items.map((item) => `<li style="margin:0 0 4px;">${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<p style="margin:6px 0 0;font-size:10px;line-height:1.3;color:#5b6960;">${escapeHtml(empty)}</p>`;
     const panel = (title: string, body: string, accent = "#3d78a9", background = "#f8fbff") => `
       <tr>
-        <td style="padding:0 0 10px;">
+        <td style="padding:0 0 8px;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;border:1px solid #c7d1cb;border-left:5px solid ${accent};border-radius:8px;background:${background};">
             <tr>
-              <td style="padding:12px;">
-                <div style="font-size:13px;font-weight:700;margin-bottom:8px;color:#1c2621;">${escapeHtml(title)}</div>
+              <td style="padding:9px;">
+                <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:#1c2621;">${escapeHtml(title)}</div>
                 ${body}
               </td>
             </tr>
@@ -2382,10 +2382,10 @@ function WeeklyExecutiveStatusView({
     `;
     const lowerRow = (label: string, value: string) => `<div style="margin:0 0 4px;"><b>${escapeHtml(label)}:</b> ${escapeHtml(value)}</div>`;
     const lowerItem = (eyebrow: string, title: string, meta?: string) => `
-      <div style="padding:8px 0;border-top:1px solid #dbe3df;">
-        <div style="font-size:10px;font-weight:700;color:#315e9c;">${escapeHtml(eyebrow)}</div>
-        <div style="font-size:12px;font-weight:700;margin-top:3px;color:#1c2621;">${escapeHtml(title)}</div>
-        ${meta ? `<div style="font-size:11px;color:#5b6960;margin-top:3px;line-height:1.35;">${meta}</div>` : ""}
+      <div style="padding:6px 0;border-top:1px solid #dbe3df;">
+        <div style="font-size:9px;font-weight:700;color:#315e9c;">${escapeHtml(eyebrow)}</div>
+        <div style="font-size:11px;font-weight:700;margin-top:2px;color:#1c2621;">${escapeHtml(title)}</div>
+        ${meta ? `<div style="font-size:10px;color:#5b6960;margin-top:2px;line-height:1.3;">${meta}</div>` : ""}
       </div>
     `;
     const milestonesHtml = upcomingMilestones.length
@@ -2420,58 +2420,58 @@ function WeeklyExecutiveStatusView({
       )).join("")
       : `<p style="margin:0;color:#5b6960;">No material changes to the programme plan this week.</p>`;
     const reportHtml = `
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:900px;border-collapse:separate;border-spacing:0;font-family:Arial,sans-serif;font-size:11px;color:#1c2621;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:900px;border-collapse:separate;border-spacing:0;font-family:Arial,sans-serif;font-size:10px;color:#1c2621;">
         <tr>
-          <td style="padding:18px 20px;background:#214c43;color:#ffffff;border-radius:8px 0 0 8px;">
-            <div style="font-size:19px;font-weight:700;">${escapeHtml(displayTitle)}</div>
-            <div style="font-size:11px;margin-top:6px;">${escapeHtml(reportSubtitle)}</div>
+          <td style="padding:14px 16px;background:#214c43;color:#ffffff;border-radius:8px 0 0 8px;">
+            <div style="font-size:17px;font-weight:700;">${escapeHtml(displayTitle)}</div>
+            <div style="font-size:10px;margin-top:5px;">${escapeHtml(reportSubtitle)}</div>
           </td>
-          <td style="padding:18px 20px;background:#315e9c;color:#ffffff;text-align:right;border-radius:0 8px 8px 0;width:170px;">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;">Report date</div>
-            <div style="font-size:15px;font-weight:700;margin-top:6px;">${escapeHtml(formatNumericDate(reportDate))}</div>
+          <td style="padding:14px 16px;background:#315e9c;color:#ffffff;text-align:right;border-radius:0 8px 8px 0;width:150px;">
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;">Report date</div>
+            <div style="font-size:13px;font-weight:700;margin-top:5px;">${escapeHtml(formatNumericDate(reportDate))}</div>
           </td>
         </tr>
-        <tr><td colspan="2" style="height:12px;"></td></tr>
+        <tr><td colspan="2" style="height:8px;"></td></tr>
         <tr>
-          <td style="padding:14px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#315e9c;">Executive status</div>
-            <p style="margin:8px 0 0;font-size:11px;line-height:1.4;">${escapeHtml(statusSummary)}</p>
+          <td style="padding:10px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;">
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#315e9c;">Executive status</div>
+            <p style="margin:6px 0 0;font-size:10px;line-height:1.3;">${escapeHtml(statusSummary)}</p>
           </td>
-          <td style="padding:14px;border:1px solid ${emailRagStyle.border};border-radius:8px;background:${emailRagStyle.background};color:${emailRagStyle.colour};">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;">Overall RAG</div>
-            <div style="font-size:17px;font-weight:700;margin-top:6px;">${escapeHtml(rag)}</div>
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;margin-top:10px;">RAG movement</div>
-            <div style="font-size:12px;font-weight:700;margin-top:4px;">${escapeHtml(movement)}</div>
+          <td style="padding:10px;border:1px solid ${emailRagStyle.border};border-radius:8px;background:${emailRagStyle.background};color:${emailRagStyle.colour};">
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;">Overall RAG</div>
+            <div style="font-size:15px;font-weight:700;margin-top:5px;">${escapeHtml(rag)}</div>
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;margin-top:8px;">RAG movement</div>
+            <div style="font-size:11px;font-weight:700;margin-top:3px;">${escapeHtml(movement)}</div>
           </td>
         </tr>
-        <tr><td colspan="2" style="height:12px;"></td></tr>
+        <tr><td colspan="2" style="height:8px;"></td></tr>
         <tr>
           <td colspan="2">
-            <table role="presentation" cellpadding="0" cellspacing="8" width="100%">
+            <table role="presentation" cellpadding="0" cellspacing="6" width="100%">
               <tr>
                 ${[
                   ["Delivery confidence", deliveryConfidence ?? "Not captured"],
                   ["Forecast to go live", forecastToGoLive],
                   ["Main blocker", mainBlocker ?? "None flagged"],
                   ["Next milestone", nextMilestone ? `${formatNumericDate(nextMilestone.finishDate)} - ${nextMilestone.name}` : "None in window"],
-                ].map(([label, value]) => `<td style="vertical-align:top;padding:12px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;width:25%;"><div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#315e9c;">${escapeHtml(label)}</div><div style="font-size:12px;font-weight:700;margin-top:8px;">${escapeHtml(value)}</div></td>`).join("")}
+                ].map(([label, value]) => `<td style="vertical-align:top;padding:9px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;width:25%;"><div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#315e9c;">${escapeHtml(label)}</div><div style="font-size:11px;font-weight:700;margin-top:6px;">${escapeHtml(value)}</div></td>`).join("")}
               </tr>
             </table>
           </td>
         </tr>
-        <tr><td colspan="2" style="height:8px;"></td></tr>
+        <tr><td colspan="2" style="height:6px;"></td></tr>
         <tr>
           <td colspan="2">
-            <table role="presentation" cellpadding="0" cellspacing="8" width="100%">
+            <table role="presentation" cellpadding="0" cellspacing="6" width="100%">
               <tr>
-                <td style="vertical-align:top;padding:12px;border-left:5px solid #2e7d55;background:#f5fbf7;"> <b>Progress this week</b>${bulletList(progressItems, "No progress this week captured.")}</td>
-                <td style="vertical-align:top;padding:12px;border-left:5px solid #b33a32;background:#fff7f6;"> <b>Current challenges</b>${bulletList(challengeItems, "No current challenges captured.")}</td>
-                <td style="vertical-align:top;padding:12px;border-left:5px solid #3d78a9;background:#f7fbff;"> <b>Next Period Focus</b>${bulletList(nextPeriodItems, "No next period focus captured.")}</td>
+                <td style="vertical-align:top;padding:9px;border-left:5px solid #2e7d55;background:#f5fbf7;font-size:10px;line-height:1.3;"> <b>Progress this week</b>${bulletList(progressItems, "No progress this week captured.")}</td>
+                <td style="vertical-align:top;padding:9px;border-left:5px solid #b33a32;background:#fff7f6;font-size:10px;line-height:1.3;"> <b>Current challenges</b>${bulletList(challengeItems, "No current challenges captured.")}</td>
+                <td style="vertical-align:top;padding:9px;border-left:5px solid #3d78a9;background:#f7fbff;font-size:10px;line-height:1.3;"> <b>Next Period Focus</b>${bulletList(nextPeriodItems, "No next period focus captured.")}</td>
               </tr>
             </table>
           </td>
         </tr>
-        <tr><td colspan="2" style="height:8px;"></td></tr>
+        <tr><td colspan="2" style="height:6px;"></td></tr>
         <tr>
           <td colspan="2">
             <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
