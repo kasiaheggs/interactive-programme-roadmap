@@ -71,23 +71,22 @@ function meaningfulText(value?: string): string | undefined {
   return text;
 }
 
-function weeklyProgrammeTitle(value?: string): string {
-  const title = (value ?? "").trim() || "Programme Delivery";
-  const withoutVersion = title
-    .replace(/\s+(?:-|\u2013)\s*v\d.*$/i, "")
-    .replace(/\s*\/\s*/g, " ")
-    .trim();
-  if (/^daf programme delivery$/i.test(withoutVersion)) return "Data Asset Foundation Programme Delivery";
-  if (/^daf\b/i.test(withoutVersion)) return withoutVersion.replace(/^daf\b/i, "Data Asset Foundation");
-  return withoutVersion || title;
-}
-
 function splitDigest(value?: string, limit = 3): string[] {
   const text = meaningfulText(value);
   if (!text) return [];
   const lineParts = text.split(/\n+/).map((part) => part.trim()).filter(Boolean);
   const parts = lineParts.length > 1 ? lineParts : text.split(/(?<=[.!?])\s+/).map((part) => part.trim()).filter(Boolean);
   return parts.slice(0, limit);
+}
+
+function formatNumericDate(value?: string, fallback = "Not set"): string {
+  const date = parseDate(value);
+  if (!date) return value ?? fallback;
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
 }
 
 function bySoonest(a?: string, b?: string): number {
@@ -104,7 +103,11 @@ function dateWithin(value: string | undefined, window: DateWindow): boolean {
 }
 
 function weeklySummaryDate(summary: { meetingDate?: string; weekEnding?: string; lastUpdated?: string }): Date | undefined {
-  return parseDate(summary.meetingDate) ?? parseDate(summary.weekEnding) ?? parseDate(summary.lastUpdated);
+  return parseDate(summary.weekEnding) ?? parseDate(summary.meetingDate) ?? parseDate(summary.lastUpdated);
+}
+
+function weeklyReportingDate(summary?: { weekEnding?: string; meetingDate?: string; lastUpdated?: string }): Date | undefined {
+  return parseDate(summary?.weekEnding) ?? parseDate(summary?.meetingDate) ?? parseDate(summary?.lastUpdated);
 }
 
 function sortedWeeklySummaries(tracker?: TrackerData) {
@@ -115,6 +118,42 @@ function sortedWeeklySummaries(tracker?: TrackerData) {
 
 function latestWeeklySummary(tracker?: TrackerData) {
   return sortedWeeklySummaries(tracker)[0];
+}
+
+function previousWeeklySummary(tracker: TrackerData | undefined, current: WeeklySummary | undefined): WeeklySummary | undefined {
+  const summaries = sortedWeeklySummaries(tracker);
+  const index = current ? summaries.findIndex((item) => item === current || (item.id && item.id === current.id)) : -1;
+  return index >= 0 ? summaries[index + 1] : summaries[1];
+}
+
+function ragRank(value?: string): number | undefined {
+  const rag = normaliseText(value);
+  if (rag.includes("green")) return 1;
+  if (rag.includes("amber")) return 2;
+  if (rag.includes("red")) return 3;
+  return undefined;
+}
+
+function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): "Improved" | "Unchanged" | "Deteriorated" | "Not captured" {
+  const currentRank = ragRank(current?.overallRag);
+  const previousRank = ragRank(previous?.overallRag);
+  if (!currentRank || !previousRank) {
+    const captured = meaningfulText(current?.ragMovement);
+    if (captured === "Improved" || captured === "Unchanged" || captured === "Deteriorated") return captured;
+    return "Not captured";
+  }
+  if (currentRank < previousRank) return "Improved";
+  if (currentRank > previousRank) return "Deteriorated";
+  return "Unchanged";
+}
+
+function dateInSelectedReportingPeriod(value: string | undefined, selected?: WeeklySummary): boolean {
+  const date = parseDate(value);
+  const selectedDate = weeklyReportingDate(selected);
+  if (!date || !selectedDate) return false;
+  const periodStart = new Date(selectedDate);
+  periodStart.setUTCDate(periodStart.getUTCDate() - 6);
+  return date >= periodStart && date <= selectedDate;
 }
 
 function isRedOrAmber(value?: string): boolean {
@@ -281,12 +320,43 @@ function decisionSort(a: TrackerDecision, b: TrackerDecision): number {
   return Number(Boolean(b.dashboardFlag)) - Number(Boolean(a.dashboardFlag)) || bySoonest(a.decisionRequiredBy ?? a.decisionDate, b.decisionRequiredBy ?? b.decisionDate);
 }
 
-function isSignificantChange(change: TrackerChange): boolean {
+function isDecisionMadeThisPeriod(decision: TrackerDecision, selected?: WeeklySummary): boolean {
+  const type = normaliseText(decision.decisionType);
+  const status = normaliseText(decision.status);
+  const made = type.includes("made") || type.includes("approved") || ["approved", "agreed", "decided"].includes(status);
+  return made && dateInSelectedReportingPeriod(decision.decisionDate ?? decision.lastDiscussedDate, selected);
+}
+
+function weeklyDecisionSelection(decisions: TrackerDecision[], selected?: WeeklySummary): TrackerDecision[] {
+  const required = decisions.filter(isOutstandingDecision);
+  const made = decisions.filter((decision) => isDecisionMadeThisPeriod(decision, selected));
+  const selectedIds = new Set<string>();
+  const include = (item: TrackerDecision) => {
+    const id = item.id || item.title;
+    if (selectedIds.has(id)) return false;
+    selectedIds.add(id);
+    return true;
+  };
+  return [
+    ...required.slice(0, 3).filter(include),
+    ...made.slice(0, 2).filter(include),
+    ...required.slice(3).filter(include),
+    ...made.slice(2).filter(include),
+  ];
+}
+
+function isMaterialChange(change: TrackerChange, selected?: WeeklySummary): boolean {
   const status = normaliseText(change.status);
   if (["closed", "complete", "completed", "done", "superseded", "cancelled"].includes(status)) return false;
+  const hasPlanPosition = Boolean(
+    meaningfulText(change.previousPosition) ||
+      meaningfulText(change.currentPosition) ||
+      meaningfulText(change.reportingImpact),
+  );
+  const inPeriod = dateInSelectedReportingPeriod(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised, selected);
   return Boolean(
-    change.dashboardFlag ||
-      meaningfulText(change.decisionRequired) ||
+    (change.dashboardFlag && (hasPlanPosition || inPeriod)) ||
+      meaningfulText(change.reportingImpact) ||
       meaningfulText(change.impactOnTime) ||
       meaningfulText(change.impactOnScope) ||
       meaningfulText(change.impactOnCost) ||
@@ -295,8 +365,8 @@ function isSignificantChange(change: TrackerChange): boolean {
 }
 
 function changeSort(a: TrackerChange, b: TrackerChange): number {
-  const aDate = parseDate(a.lastDiscussedDate ?? a.dateRaised);
-  const bDate = parseDate(b.lastDiscussedDate ?? b.dateRaised);
+  const aDate = parseDate(a.changeAgreedEffectiveDate ?? a.lastDiscussedDate ?? a.dateRaised);
+  const bDate = parseDate(b.changeAgreedEffectiveDate ?? b.lastDiscussedDate ?? b.dateRaised);
   return Number(Boolean(b.dashboardFlag)) - Number(Boolean(a.dashboardFlag)) || (bDate?.getTime() ?? 0) - (aDate?.getTime() ?? 0);
 }
 
@@ -322,8 +392,10 @@ function addHeader(doc: JsPDF, title: string, reportDate: string) {
   doc.text(title, 12, 11);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text("Weekly executive status", 12, 19);
-  doc.text(`Report date ${formatDate(reportDate)}`, pageWidth - 12, 19, { align: "right" });
+  doc.text("Weekly Project Status Report", 12, 19);
+  doc.text("Report date", pageWidth - 12, 11, { align: "right" });
+  doc.setFont("helvetica", "bold");
+  doc.text(formatNumericDate(reportDate), pageWidth - 12, 19, { align: "right" });
   setText(doc, colours.ink);
 }
 
@@ -360,6 +432,22 @@ function addBox(doc: JsPDF, x: number, y: number, w: number, h: number, title: s
   setText(doc, colours.ink);
   const lines = Array.isArray(body) ? body : doc.splitTextToSize(body, w - 8);
   doc.text(lines.slice(0, Math.max(2, Math.floor((h - 17) / 4.4))), x + 5, y + 20);
+}
+
+function addRagMovementBox(doc: JsPDF, x: number, y: number, w: number, h: number, rag: string, movement: string) {
+  const accent = toneColour(rag);
+  doc.setDrawColor(...accent);
+  doc.setFillColor(248, 252, 255);
+  doc.roundedRect(x, y, w, h, 2.2, 2.2, "FD");
+  doc.setFillColor(...accent);
+  doc.rect(x, y, 1.8, h, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7.6);
+  setText(doc, colours.muted);
+  doc.text("RAG MOVEMENT", x + 5, y + 8);
+  doc.setFontSize(9.8);
+  setText(doc, colours.ink);
+  doc.text(movement, x + 5, y + 16);
 }
 
 function textBoxHeight(doc: JsPDF, lines: string[], width: number): number {
@@ -450,8 +538,10 @@ function addFooters(doc: JsPDF) {
 export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, curation = {} }: ExportWeeklyStatusOptions) {
   const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
   const weekly = latestWeeklySummary(tracker);
-  const reportDate = new Date().toISOString();
-  const displayTitle = weeklyProgrammeTitle(schedule.title);
+  const previousWeekly = previousWeeklySummary(tracker, weekly);
+  const reportDate = weekly?.weekEnding ?? weekly?.meetingDate ?? new Date().toISOString();
+  const displayTitle = "Data Asset Foundation Programme";
+  const movement = ragMovement(weekly, previousWeekly);
   const forwardWindow = { ...dateWindow, start: dateWindow.start ?? parseDate(reportDate) };
   const upcomingMilestoneSource = programmeMilestones(schedule)
     .filter((item) => item.isMilestone && dateWithin(item.finishDate, forwardWindow) && item.status !== "complete")
@@ -477,9 +567,10 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
     5,
   );
   const allDecisions = (tracker?.decisions ?? []).filter((decision) => !isCompleteStatus(decision.status)).sort(decisionSort);
-  const decisionsNeeded = curateWeeklyItems(allDecisions.filter(isOutstandingDecision), allDecisions, "decisions", curation, (decision) => `decision-${decision.id}`, 5);
+  const defaultDecisions = weeklyDecisionSelection(allDecisions, weekly);
+  const decisionsNeeded = curateWeeklyItems(defaultDecisions, allDecisions, "decisions", curation, (decision) => `decision-${decision.id}`, 5);
   const allChanges = (tracker?.changes ?? []).filter((change) => !isCompleteStatus(change.status)).sort(changeSort);
-  const significantChanges = curateWeeklyItems(allChanges.filter(isSignificantChange), allChanges, "changes", curation, (change) => `change-${change.id}`, 5);
+  const significantChanges = curateWeeklyItems(allChanges.filter((change) => isMaterialChange(change, weekly)), allChanges, "changes", curation, (change) => `change-${change.id}`, 5);
   const deliveryConfidence = meaningfulText(weekly?.goLiveConfidence) ?? "Not captured";
   const forecastToGoLive = forecastToGoLiveLabel(schedule);
   const mainBlocker = meaningfulText(weekly?.mainBlocker) ?? risksIssues[0]?.title ?? "None flagged";
@@ -492,10 +583,12 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
     "Import the latest tracker to populate the weekly status update.";
   const nextMilestone = upcomingMilestoneSource[0];
   const nextKeyDate = nextMilestone ? `${formatDate(nextMilestone.finishDate)} - ${nextMilestone.name}` : "None in window";
-  const progressItems = splitDigest(weekly?.keyProgress, 5);
-  const priorityItems = splitDigest(weekly?.priorityActions, 5);
-  const whatChangedText = curation.whatChangedOverride ?? meaningfulText(weekly?.whatChanged) ?? "No material changes captured in the latest weekly row.";
-  const whatChangedItems = splitDigest(whatChangedText, 5);
+  const progressText = curation.progressThisWeekOverride ?? meaningfulText(weekly?.progressThisWeek) ?? meaningfulText(weekly?.keyProgress) ?? "";
+  const challengesText = curation.currentChallengesOverride ?? meaningfulText(weekly?.currentChallenges) ?? meaningfulText(weekly?.keyRisksOrIssues) ?? "";
+  const nextPeriodText = curation.nextPeriodFocusOverride ?? meaningfulText(weekly?.nextPeriodFocus) ?? meaningfulText(weekly?.priorityActions) ?? "";
+  const progressItems = splitDigest(progressText, 5);
+  const challengeItems = splitDigest(challengesText, 5);
+  const nextPeriodItems = splitDigest(nextPeriodText, 5);
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -537,6 +630,9 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
   doc.text(rag, ragBoxX + ragBoxWidth / 2, y + 27, { align: "center" });
   y += snapshotHeight + 8;
 
+  addRagMovementBox(doc, 12, y, pageWidth - 24, 20, rag, movement);
+  y += 26;
+
   const cardWidth = (pageWidth - 30) / 2;
   addBox(doc, 12, y, cardWidth, 28, "Delivery confidence", deliveryConfidence);
   addBox(doc, 18 + cardWidth, y, cardWidth, 28, "Forecast to go live", forecastToGoLive);
@@ -545,9 +641,9 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
   addBox(doc, 18 + cardWidth, y, cardWidth, 32, "Next milestone", nextKeyDate);
   y += 38;
 
-  y = addNarrativeBox(doc, y, "Last week", progressItems, "No weekly progress summary found.");
-  y = addNarrativeBox(doc, y, "This week / next", priorityItems, "No priority actions summary found.");
-  y = addNarrativeBox(doc, y, "What changed this week", whatChangedItems, "No material changes captured in the latest weekly row.");
+  y = addNarrativeBox(doc, y, "Progress this week", progressItems, "No progress this week captured in the selected weekly summary row.");
+  y = addNarrativeBox(doc, y, "Current challenges", challengeItems, "No current challenges captured in the selected weekly summary row.");
+  y = addNarrativeBox(doc, y, "Next Period Focus", nextPeriodItems, "No next period focus captured in the selected weekly summary row.");
 
   table(
     doc,
@@ -569,33 +665,31 @@ export async function exportWeeklyStatusPdf({ schedule, tracker, dateWindow, cur
   y = table(
     doc,
     autoTable,
-    "Decisions needed",
+    "Decisions",
     y,
-    ["Date", "Decision", "Decision maker", "Status"],
-    decisionsNeeded.map((decision) => [
-      formatDate(decision.decisionRequiredBy ?? decision.decisionDate),
+    ["Type", "Decision", "Decision maker", "Date"],
+    decisionsNeeded.map((decision) => {
+      const made = isDecisionMadeThisPeriod(decision, weekly);
+      return [
+      made ? "Decision made" : "Decision required",
       decision.title,
       decision.decisionMaker ?? decision.owner ?? "-",
-      decision.status ?? "Decision required",
-    ]),
+      formatNumericDate(made ? decision.decisionDate : decision.decisionRequiredBy ?? decision.decisionDate, "-"),
+    ];
+    }),
   );
   table(
     doc,
     autoTable,
-    "Significant changes",
+    "Material Changes to Plan",
     y,
-    ["Date", "Change", "Why it matters", "Owner"],
+    ["Change", "Was", "Now", "Impact", "Agreed"],
     significantChanges.map((change) => [
-      formatDate(change.lastDiscussedDate ?? change.dateRaised),
       change.title,
-      meaningfulText(change.decisionRequired) ??
-        meaningfulText(change.impactOnTime) ??
-        meaningfulText(change.impactOnScope) ??
-        meaningfulText(change.impactOnCost) ??
-        meaningfulText(change.impactOnQualityOrBenefits) ??
-        change.latestUpdate ??
-        "-",
-      change.owner ?? change.decisionMaker ?? "-",
+      meaningfulText(change.previousPosition) ?? "-",
+      meaningfulText(change.currentPosition) ?? "-",
+      meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "-",
+      formatNumericDate(change.changeAgreedEffectiveDate, "-"),
     ]),
   );
 

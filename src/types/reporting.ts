@@ -12,6 +12,9 @@ export type WeeklySummary = {
   ragRationale?: string;
   topicsDiscussed?: string;
   keyProgress?: string;
+  progressThisWeek?: string;
+  currentChallenges?: string;
+  nextPeriodFocus?: string;
   whatChanged?: string;
   keyRisksOrIssues?: string;
   decisionsMade?: string;
@@ -128,6 +131,10 @@ export type TrackerChange = {
   status?: string;
   updateType?: string;
   latestUpdate?: string;
+  previousPosition?: string;
+  currentPosition?: string;
+  reportingImpact?: string;
+  changeAgreedEffectiveDate?: string;
 };
 
 export type WeeklyStatusSectionKey = "milestones" | "risksIssues" | "decisions" | "changes";
@@ -138,6 +145,9 @@ export type WeeklyStatusCuration = Partial<Record<WeeklyStatusSectionKey, {
 }>> & {
   statusSummaryOverride?: string;
   whatChangedOverride?: string;
+  progressThisWeekOverride?: string;
+  currentChallengesOverride?: string;
+  nextPeriodFocusOverride?: string;
 };
 
 export type MeetingMinute = {

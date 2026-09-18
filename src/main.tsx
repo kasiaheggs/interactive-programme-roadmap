@@ -531,6 +531,14 @@ function meaningfulText(value?: string): string | undefined {
   return text;
 }
 
+function escapeHtml(value?: string): string {
+  return (value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function splitDigest(value?: string, limit = 3): string[] {
   const text = meaningfulText(value);
   if (!text) return [];
@@ -554,17 +562,6 @@ function formatNumericDate(value?: string, fallback = "Not set"): string {
   }).format(date);
 }
 
-function weeklyProgrammeTitle(value?: string): string {
-  const title = (value ?? "").trim() || "Programme Delivery";
-  const withoutVersion = title
-    .replace(/\s+(?:-|\u2013)\s*v\d.*$/i, "")
-    .replace(/\s*\/\s*/g, " ")
-    .trim();
-  if (/^daf programme delivery$/i.test(withoutVersion)) return "Data Asset Foundation Programme Delivery";
-  if (/^daf\b/i.test(withoutVersion)) return withoutVersion.replace(/^daf\b/i, "Data Asset Foundation");
-  return withoutVersion || title;
-}
-
 function itemImportance(item: ProgrammeItem): number {
   const level = item.milestoneLevel?.toLowerCase() ?? "";
   if (item.executiveMilestone || level.includes("executive")) return 5;
@@ -579,7 +576,47 @@ function latestWeeklySummary(tracker?: TrackerData) {
 }
 
 function weeklySummaryDate(summary: { meetingDate?: string; weekEnding?: string; lastUpdated?: string }): Date | undefined {
-  return parseDate(summary.meetingDate) ?? parseDate(summary.weekEnding) ?? parseDate(summary.lastUpdated);
+  return parseDate(summary.weekEnding) ?? parseDate(summary.meetingDate) ?? parseDate(summary.lastUpdated);
+}
+
+function weeklyReportingDate(summary?: { weekEnding?: string; meetingDate?: string; lastUpdated?: string }): Date | undefined {
+  return parseDate(summary?.weekEnding) ?? parseDate(summary?.meetingDate) ?? parseDate(summary?.lastUpdated);
+}
+
+function previousWeeklySummary(tracker: TrackerData | undefined, current: WeeklySummary | undefined): WeeklySummary | undefined {
+  const summaries = sortedWeeklySummaries(tracker);
+  const index = current ? summaries.findIndex((item) => item === current || (item.id && item.id === current.id)) : -1;
+  return index >= 0 ? summaries[index + 1] : summaries[1];
+}
+
+function ragRank(value?: string): number | undefined {
+  const rag = normaliseText(value);
+  if (rag.includes("green")) return 1;
+  if (rag.includes("amber")) return 2;
+  if (rag.includes("red")) return 3;
+  return undefined;
+}
+
+function ragMovement(current?: WeeklySummary, previous?: WeeklySummary): "Improved" | "Unchanged" | "Deteriorated" | "Not captured" {
+  const currentRank = ragRank(current?.overallRag);
+  const previousRank = ragRank(previous?.overallRag);
+  if (!currentRank || !previousRank) {
+    const captured = meaningfulText(current?.ragMovement);
+    if (captured === "Improved" || captured === "Unchanged" || captured === "Deteriorated") return captured;
+    return "Not captured";
+  }
+  if (currentRank < previousRank) return "Improved";
+  if (currentRank > previousRank) return "Deteriorated";
+  return "Unchanged";
+}
+
+function dateInSelectedReportingPeriod(value: string | undefined, selected?: WeeklySummary): boolean {
+  const date = parseDate(value);
+  const selectedDate = weeklyReportingDate(selected);
+  if (!date || !selectedDate) return false;
+  const periodStart = new Date(selectedDate);
+  periodStart.setUTCDate(periodStart.getUTCDate() - 6);
+  return date >= periodStart && date <= selectedDate;
 }
 
 function sortedWeeklySummaries(tracker?: TrackerData) {
@@ -612,12 +649,43 @@ function decisionSort(a: TrackerDecision, b: TrackerDecision): number {
   return Number(Boolean(b.dashboardFlag)) - Number(Boolean(a.dashboardFlag)) || bySoonest(a.decisionRequiredBy ?? a.decisionDate, b.decisionRequiredBy ?? b.decisionDate);
 }
 
-function isSignificantChange(change: TrackerChange): boolean {
+function isDecisionMadeThisPeriod(decision: TrackerDecision, selected?: WeeklySummary): boolean {
+  const type = normaliseText(decision.decisionType);
+  const status = normaliseText(decision.status);
+  const made = type.includes("made") || type.includes("approved") || ["approved", "agreed", "decided"].includes(status);
+  return made && dateInSelectedReportingPeriod(decision.decisionDate ?? decision.lastDiscussedDate, selected);
+}
+
+function weeklyDecisionSelection(decisions: TrackerDecision[], selected?: WeeklySummary): TrackerDecision[] {
+  const required = decisions.filter(isOutstandingDecision);
+  const made = decisions.filter((decision) => isDecisionMadeThisPeriod(decision, selected));
+  const selectedIds = new Set<string>();
+  const include = (item: TrackerDecision) => {
+    const id = item.id || item.title;
+    if (selectedIds.has(id)) return false;
+    selectedIds.add(id);
+    return true;
+  };
+  return [
+    ...required.slice(0, 3).filter(include),
+    ...made.slice(0, 2).filter(include),
+    ...required.slice(3).filter(include),
+    ...made.slice(2).filter(include),
+  ];
+}
+
+function isMaterialChange(change: TrackerChange, selected?: WeeklySummary): boolean {
   const status = normaliseText(change.status);
   if (["closed", "complete", "completed", "done", "superseded", "cancelled"].includes(status)) return false;
+  const hasPlanPosition = Boolean(
+    meaningfulText(change.previousPosition) ||
+      meaningfulText(change.currentPosition) ||
+      meaningfulText(change.reportingImpact),
+  );
+  const inPeriod = dateInSelectedReportingPeriod(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised, selected);
   return Boolean(
-    change.dashboardFlag ||
-      meaningfulText(change.decisionRequired) ||
+    (change.dashboardFlag && (hasPlanPosition || inPeriod)) ||
+      meaningfulText(change.reportingImpact) ||
       meaningfulText(change.impactOnTime) ||
       meaningfulText(change.impactOnScope) ||
       meaningfulText(change.impactOnCost) ||
@@ -626,8 +694,8 @@ function isSignificantChange(change: TrackerChange): boolean {
 }
 
 function changeSort(a: TrackerChange, b: TrackerChange): number {
-  const aDate = parseDate(a.lastDiscussedDate ?? a.dateRaised);
-  const bDate = parseDate(b.lastDiscussedDate ?? b.dateRaised);
+  const aDate = parseDate(a.changeAgreedEffectiveDate ?? a.lastDiscussedDate ?? a.dateRaised);
+  const bDate = parseDate(b.changeAgreedEffectiveDate ?? b.lastDiscussedDate ?? b.dateRaised);
   return Number(Boolean(b.dashboardFlag)) - Number(Boolean(a.dashboardFlag)) || (bDate?.getTime() ?? 0) - (aDate?.getTime() ?? 0);
 }
 
@@ -2113,8 +2181,10 @@ function WeeklyExecutiveStatusView({
   onExportPdf: () => void;
 }) {
   const weekly = latestWeeklySummary(tracker);
+  const previousWeekly = previousWeeklySummary(tracker, weekly);
   const generatedReportDate = new Date().toISOString();
-  const latestWeeklyDate = weekly?.meetingDate ?? weekly?.weekEnding;
+  const reportDate = weekly?.weekEnding ?? weekly?.meetingDate ?? generatedReportDate;
+  const latestWeeklyDate = weekly?.weekEnding ?? weekly?.meetingDate;
   const forwardWindow = { ...dateWindow, start: dateWindow.start ?? parseDate(generatedReportDate) };
   const upcomingMilestoneSource = programmeMilestones(schedule)
     .filter((item) => item.isMilestone && dateWithin(item.finishDate, forwardWindow) && item.status !== "complete")
@@ -2130,13 +2200,13 @@ function WeeklyExecutiveStatusView({
   const allDecisions = (tracker?.decisions ?? [])
     .filter((decision) => !isCompleteStatus(decision.status))
     .sort(decisionSort);
-  const defaultDecisions = allDecisions.filter(isOutstandingDecision);
+  const defaultDecisions = weeklyDecisionSelection(allDecisions, weekly);
   const decisionsNeeded = curateWeeklyItems(defaultDecisions, allDecisions, "decisions", curation, (decision) => `decision-${decision.id}`, 5);
   const allChanges = (tracker?.changes ?? [])
     .filter((change) => !isCompleteStatus(change.status))
     .sort(changeSort);
   const significantChangeSource = allChanges
-    .filter(isSignificantChange)
+    .filter((change) => isMaterialChange(change, weekly))
     .sort(changeSort);
   const significantChanges = curateWeeklyItems(significantChangeSource, allChanges, "changes", curation, (change) => `change-${change.id}`, 5);
   const moreUpcomingMilestones = remainingWeeklyItems(upcomingMilestoneSource, upcomingMilestones, (item) => item.uid);
@@ -2147,10 +2217,13 @@ function WeeklyExecutiveStatusView({
   const moreChanges = remainingWeeklyItems(allChanges, significantChanges, (change) => `change-${change.id}`);
   const [expandedTools, setExpandedTools] = useState<string[]>([]);
   const [showStatusSummaryEditor, setShowStatusSummaryEditor] = useState(false);
-  const [showWhatChangedEditor, setShowWhatChangedEditor] = useState(false);
+  const [showNarrativeEditor, setShowNarrativeEditor] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
   const [dragItem, setDragItem] = useState<WeeklyDragItem | undefined>();
   const ragTone = toneClass(weekly?.overallRag);
-  const displayTitle = weeklyProgrammeTitle(schedule.title);
+  const displayTitle = "Data Asset Foundation Programme";
+  const reportSubtitle = "Weekly Project Status Report";
+  const movement = ragMovement(weekly, previousWeekly);
   const deliveryConfidence = meaningfulText(weekly?.goLiveConfidence);
   const forecastToGoLive = forecastToGoLiveLabel(schedule);
   const mainBlocker = meaningfulText(weekly?.mainBlocker) ?? risksIssues[0]?.title;
@@ -2162,11 +2235,12 @@ function WeeklyExecutiveStatusView({
     "Import the latest tracker to populate the weekly status update.";
   const statusSummary = curation.statusSummaryOverride ?? statusSummarySource;
   const nextMilestone = upcomingMilestoneSource[0];
-  const progressItems = splitDigest(weekly?.keyProgress, 5);
-  const priorityItems = splitDigest(weekly?.priorityActions, 5);
-  const whatChangedSource = meaningfulText(weekly?.whatChanged) ?? "No material changes captured in the latest weekly row.";
-  const whatChangedText = curation.whatChangedOverride ?? whatChangedSource;
-  const whatChangedItems = splitDigest(whatChangedText, 5);
+  const progressText = curation.progressThisWeekOverride ?? meaningfulText(weekly?.progressThisWeek) ?? meaningfulText(weekly?.keyProgress) ?? "";
+  const challengesText = curation.currentChallengesOverride ?? meaningfulText(weekly?.currentChallenges) ?? meaningfulText(weekly?.keyRisksOrIssues) ?? "";
+  const nextPeriodText = curation.nextPeriodFocusOverride ?? meaningfulText(weekly?.nextPeriodFocus) ?? meaningfulText(weekly?.priorityActions) ?? "";
+  const progressItems = splitDigest(progressText, 5);
+  const challengeItems = splitDigest(challengesText, 5);
+  const nextPeriodItems = splitDigest(nextPeriodText, 5);
   const trackerStatus = tracker
     ? `${tracker.sourceFileName ?? "Tracker workbook"} | ${tracker.weeklySummaries.length} weekly summaries | ${tracker.risks.length} risks | ${tracker.issues.length} issues | ${tracker.actions.length} actions`
     : "Import the latest tracker workbook to populate RAG, weekly narrative, risks, decisions and actions.";
@@ -2215,10 +2289,10 @@ function WeeklyExecutiveStatusView({
       statusSummaryOverride: value,
     }));
   };
-  const updateWhatChanged = (value: string | undefined) => {
+  const updateNarrative = (key: "progressThisWeekOverride" | "currentChallengesOverride" | "nextPeriodFocusOverride", value: string | undefined) => {
     onUpdateCuration((current) => ({
       ...current,
-      whatChangedOverride: value,
+      [key]: value,
     }));
   };
 
@@ -2258,26 +2332,184 @@ function WeeklyExecutiveStatusView({
     },
   });
 
+  const copyForEmail = async () => {
+    const rag = meaningfulText(weekly?.overallRag) ?? "Not captured";
+    const emailRagStyles: Record<typeof ragTone, { background: string; colour: string; border: string }> = {
+      red: { background: "#b33a32", colour: "#ffffff", border: "#b33a32" },
+      amber: { background: "#ff8a00", colour: "#1c241f", border: "#ff8a00" },
+      green: { background: "#2e7d55", colour: "#ffffff", border: "#2e7d55" },
+      neutral: { background: "#f8fbff", colour: "#1c2621", border: "#c7d1cb" },
+    };
+    const emailRagStyle = emailRagStyles[ragTone];
+    const bulletList = (items: string[], empty: string) => items.length
+      ? `<ul style="margin:8px 0 0 18px;padding:0;">${items.map((item) => `<li style="margin:0 0 6px;">${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<p style="margin:8px 0 0;color:#5b6960;">${escapeHtml(empty)}</p>`;
+    const panel = (title: string, body: string, accent = "#3d78a9", background = "#f8fbff") => `
+      <td style="vertical-align:top;width:50%;padding:8px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;border:1px solid #c7d1cb;border-left:5px solid ${accent};border-radius:8px;background:${background};">
+          <tr>
+            <td style="padding:12px;">
+              <div style="font-size:15px;font-weight:700;margin-bottom:8px;color:#1c2621;">${escapeHtml(title)}</div>
+              ${body}
+            </td>
+          </tr>
+        </table>
+      </td>
+    `;
+    const lowerRow = (label: string, value: string) => `<div style="margin:0 0 4px;"><b>${escapeHtml(label)}:</b> ${escapeHtml(value)}</div>`;
+    const lowerItem = (eyebrow: string, title: string, meta?: string) => `
+      <div style="padding:8px 0;border-top:1px solid #dbe3df;">
+        <div style="font-size:11px;font-weight:700;color:#315e9c;">${escapeHtml(eyebrow)}</div>
+        <div style="font-size:13px;font-weight:700;margin-top:3px;color:#1c2621;">${escapeHtml(title)}</div>
+        ${meta ? `<div style="font-size:12px;color:#5b6960;margin-top:3px;line-height:1.35;">${meta}</div>` : ""}
+      </div>
+    `;
+    const milestonesHtml = upcomingMilestones.length
+      ? upcomingMilestones.map((item) => lowerItem(formatNumericDate(item.finishDate), item.name, escapeHtml(item.stream ?? item.milestoneLevel ?? "Milestone"))).join("")
+      : `<p style="margin:0;color:#5b6960;">No upcoming programme milestones within the selected window.</p>`;
+    const risksHtml = risksIssues.length
+      ? risksIssues.map((item) => lowerItem(item.status ?? item.kind, item.title, escapeHtml(item.stream ?? item.meta ?? item.kind))).join("")
+      : `<p style="margin:0;color:#5b6960;">No material risks or issues selected for this report.</p>`;
+    const decisionsHtml = decisionsNeeded.length
+      ? decisionsNeeded.map((decision) => {
+        const made = isDecisionMadeThisPeriod(decision, weekly);
+        return lowerItem(
+          made ? "Decision made" : "Decision required",
+          decision.title,
+          escapeHtml(`${made ? "Decision made by" : "Decision sits with"}: ${decision.decisionMaker ?? decision.owner ?? "Not assigned"}`),
+        );
+      }).join("")
+      : `<p style="margin:0;color:#5b6960;">No decisions selected for this report.</p>`;
+    const changesHtml = significantChanges.length
+      ? significantChanges.map((change) => lowerItem(
+        formatNumericDate(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised),
+        change.title,
+        [
+          lowerRow("Was", meaningfulText(change.previousPosition) ?? "Not captured"),
+          lowerRow("Now", meaningfulText(change.currentPosition) ?? "Not captured"),
+          lowerRow("Impact", meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "Not captured"),
+          lowerRow("Agreed", formatNumericDate(change.changeAgreedEffectiveDate, "Not captured")),
+        ].join(""),
+      )).join("")
+      : `<p style="margin:0;color:#5b6960;">No material changes to the programme plan this week.</p>`;
+    const reportHtml = `
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:900px;border-collapse:separate;border-spacing:0;font-family:Arial,sans-serif;color:#1c2621;">
+        <tr>
+          <td style="padding:18px 20px;background:#214c43;color:#ffffff;border-radius:8px 0 0 8px;">
+            <div style="font-size:22px;font-weight:700;">${escapeHtml(displayTitle)}</div>
+            <div style="font-size:13px;margin-top:6px;">${escapeHtml(reportSubtitle)}</div>
+          </td>
+          <td style="padding:18px 20px;background:#315e9c;color:#ffffff;text-align:right;border-radius:0 8px 8px 0;width:170px;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;">Report date</div>
+            <div style="font-size:17px;font-weight:700;margin-top:6px;">${escapeHtml(formatNumericDate(reportDate))}</div>
+          </td>
+        </tr>
+        <tr><td colspan="2" style="height:12px;"></td></tr>
+        <tr>
+          <td style="padding:14px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:#315e9c;">Executive status</div>
+            <p style="margin:8px 0 0;line-height:1.45;">${escapeHtml(statusSummary)}</p>
+          </td>
+          <td style="padding:14px;border:1px solid ${emailRagStyle.border};border-radius:8px;background:${emailRagStyle.background};color:${emailRagStyle.colour};">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;">Overall RAG</div>
+            <div style="font-size:20px;font-weight:700;margin-top:6px;">${escapeHtml(rag)}</div>
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;margin-top:10px;">RAG movement</div>
+            <div style="font-size:14px;font-weight:700;margin-top:4px;">${escapeHtml(movement)}</div>
+          </td>
+        </tr>
+        <tr><td colspan="2" style="height:12px;"></td></tr>
+        <tr>
+          <td colspan="2">
+            <table role="presentation" cellpadding="0" cellspacing="8" width="100%">
+              <tr>
+                ${[
+                  ["Delivery confidence", deliveryConfidence ?? "Not captured"],
+                  ["Forecast to go live", forecastToGoLive],
+                  ["Main blocker", mainBlocker ?? "None flagged"],
+                  ["Next milestone", nextMilestone ? `${formatNumericDate(nextMilestone.finishDate)} - ${nextMilestone.name}` : "None in window"],
+                ].map(([label, value]) => `<td style="vertical-align:top;padding:12px;border:1px solid #c7d1cb;border-radius:8px;background:#f8fbff;width:25%;"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#315e9c;">${escapeHtml(label)}</div><div style="font-size:13px;font-weight:700;margin-top:8px;">${escapeHtml(value)}</div></td>`).join("")}
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr><td colspan="2" style="height:8px;"></td></tr>
+        <tr>
+          <td colspan="2">
+            <table role="presentation" cellpadding="0" cellspacing="8" width="100%">
+              <tr>
+                <td style="vertical-align:top;padding:12px;border-left:5px solid #2e7d55;background:#f5fbf7;"> <b>Progress this week</b>${bulletList(progressItems, "No progress this week captured.")}</td>
+                <td style="vertical-align:top;padding:12px;border-left:5px solid #b33a32;background:#fff7f6;"> <b>Current challenges</b>${bulletList(challengeItems, "No current challenges captured.")}</td>
+                <td style="vertical-align:top;padding:12px;border-left:5px solid #3d78a9;background:#f7fbff;"> <b>Next Period Focus</b>${bulletList(nextPeriodItems, "No next period focus captured.")}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr><td colspan="2" style="height:8px;"></td></tr>
+        <tr>
+          <td colspan="2">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+              <tr>
+                ${panel("Upcoming milestones", milestonesHtml, "#3d78a9", "#f7fbff")}
+                ${panel("Risks / issues", risksHtml, "#b33a32", "#fff7f6")}
+              </tr>
+              <tr>
+                ${panel("Decisions", decisionsHtml, "#ff8a00", "#fffaf2")}
+                ${panel("Material Changes to Plan", changesHtml, "#315e9c", "#f8fbff")}
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `;
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/html": new Blob([reportHtml], { type: "text/html" }),
+        "text/plain": new Blob([`${displayTitle}\n${reportSubtitle}\nReport date: ${formatNumericDate(reportDate)}\n\n${statusSummary}`], { type: "text/plain" }),
+      }),
+    ]);
+    setEmailCopied(true);
+    window.setTimeout(() => setEmailCopied(false), 2500);
+  };
+
   return (
     <>
       <div id="weekly-status-export" className={`weekly-status weekly-${ragTone}`}>
         <div className={`weekly-source ${tracker && weekly ? "loaded" : "missing"}`}>
           <span>Data source</span>
           <strong>{trackerStatus}</strong>
-          <em>{weekly ? `Latest weekly row: ${weekly.id || "untitled"} | ${formatDate(latestWeeklyDate)} | ${weekly.overallRag ?? "RAG not set"}` : "No weekly summary row found"}</em>
+          <em>{weekly ? `Reporting row: ${weekly.id || "untitled"} | ${formatNumericDate(latestWeeklyDate)} | ${weekly.overallRag ?? "RAG not set"}` : "No weekly summary row found"}</em>
         </div>
         <header className="weekly-header">
           <div>
-            <span className="snapshot-eyebrow">Weekly executive status</span>
+            <span className="snapshot-eyebrow">{reportSubtitle}</span>
             <h2>{displayTitle}</h2>
-            <p>{statusSummary}</p>
+            <p>{reportSubtitle}</p>
           </div>
-          <div className={`weekly-rag weekly-rag-${ragTone}`}>
-            <span>Overall RAG</span>
-            <strong>{meaningfulText(weekly?.overallRag) ?? "Not captured"}</strong>
-            <em>{formatDate(generatedReportDate)}</em>
+          <div className="weekly-report-date">
+            <span>Report date</span>
+            <strong>{formatNumericDate(reportDate)}</strong>
           </div>
         </header>
+
+        <section className="weekly-executive-row">
+          <article className="weekly-executive-status-card">
+            <div className="weekly-section-heading">
+              <ClipboardCheck size={18} />
+              <span>Executive status</span>
+            </div>
+            <p>{statusSummary}</p>
+          </article>
+          <aside className="weekly-rag-stack">
+            <div className={`weekly-rag weekly-rag-${ragTone}`}>
+              <span>Overall RAG</span>
+              <strong>{meaningfulText(weekly?.overallRag) ?? "Not captured"}</strong>
+            </div>
+            <div className="weekly-movement-card">
+              <span>RAG movement</span>
+              <strong>{movement}</strong>
+            </div>
+          </aside>
+        </section>
 
         {showStatusSummaryEditor ? (
         <section className="weekly-summary-editor">
@@ -2304,6 +2536,58 @@ function WeeklyExecutiveStatusView({
         </section>
         ) : null}
 
+        {showNarrativeEditor ? (
+        <section className="weekly-narrative-editor">
+          <article>
+            <span>Progress this week</span>
+            <textarea
+              value={progressText}
+              onChange={(event) => updateNarrative("progressThisWeekOverride", event.target.value)}
+              rows={4}
+              aria-label="Edit progress this week"
+            />
+            {curation.progressThisWeekOverride !== undefined ? (
+              <button type="button" className="download-action secondary" onClick={() => updateNarrative("progressThisWeekOverride", undefined)}>
+                Use tracker progress
+              </button>
+            ) : null}
+          </article>
+          <article>
+            <span>Current challenges</span>
+            <textarea
+              value={challengesText}
+              onChange={(event) => updateNarrative("currentChallengesOverride", event.target.value)}
+              rows={4}
+              aria-label="Edit current challenges"
+            />
+            {curation.currentChallengesOverride !== undefined ? (
+              <button type="button" className="download-action secondary" onClick={() => updateNarrative("currentChallengesOverride", undefined)}>
+                Use tracker challenges
+              </button>
+            ) : null}
+          </article>
+          <article>
+            <span>Next Period Focus</span>
+            <textarea
+              value={nextPeriodText}
+              onChange={(event) => updateNarrative("nextPeriodFocusOverride", event.target.value)}
+              rows={4}
+              aria-label="Edit next period focus"
+            />
+            {curation.nextPeriodFocusOverride !== undefined ? (
+              <button type="button" className="download-action secondary" onClick={() => updateNarrative("nextPeriodFocusOverride", undefined)}>
+                Use tracker focus
+              </button>
+            ) : null}
+          </article>
+          <div className="weekly-summary-actions">
+            <button type="button" className="download-action secondary" onClick={() => setShowNarrativeEditor(false)}>
+              Hide editor
+            </button>
+          </div>
+        </section>
+        ) : null}
+
         <section className="weekly-kpis">
           <article>
             <span>Delivery confidence</span>
@@ -2324,41 +2608,20 @@ function WeeklyExecutiveStatusView({
         </section>
 
         <section className="weekly-focus">
-          <article className="weekly-panel">
-            <h3>Last week</h3>
+          <article className="weekly-panel weekly-progress">
+            <h3>Progress this week</h3>
             {progressItems.map((item) => <p key={item}>{item}</p>)}
-            {!progressItems.length ? <p>No weekly progress summary found.</p> : null}
+            {!progressItems.length ? <p>No progress this week captured in the selected weekly summary row.</p> : null}
           </article>
-          <article className="weekly-panel">
-            <h3>This week / next</h3>
-            {priorityItems.map((item) => <p key={item}>{item}</p>)}
-            {!priorityItems.length ? <p>No priority actions summary found.</p> : null}
+          <article className="weekly-panel weekly-challenges">
+            <h3>Current challenges</h3>
+            {challengeItems.map((item) => <p key={item}>{item}</p>)}
+            {!challengeItems.length ? <p>No current challenges captured in the selected weekly summary row.</p> : null}
           </article>
-          <article className="weekly-panel weekly-ask">
-            <h3>What changed this week</h3>
-            {whatChangedItems.map((item) => <p key={item}>{item}</p>)}
-            {!whatChangedItems.length ? <p>No material changes captured in the latest weekly row.</p> : null}
-            {showWhatChangedEditor ? (
-              <div className="weekly-panel-editor">
-                <span>{curation.whatChangedOverride !== undefined ? "Edited on dashboard" : "Tracker: What changed this week"}</span>
-                <textarea
-                  value={whatChangedText}
-                  onChange={(event) => updateWhatChanged(event.target.value)}
-                  rows={4}
-                  aria-label="Edit what changed this week"
-                />
-                <div className="weekly-panel-actions">
-                  {curation.whatChangedOverride !== undefined ? (
-                    <button type="button" className="download-action secondary" onClick={() => updateWhatChanged(undefined)}>
-                      Use tracker changes
-                    </button>
-                  ) : null}
-                  <button type="button" className="download-action secondary" onClick={() => setShowWhatChangedEditor(false)}>
-                    Hide editor
-                  </button>
-                </div>
-              </div>
-            ) : null}
+          <article className="weekly-panel weekly-next-focus">
+            <h3>Next Period Focus</h3>
+            {nextPeriodItems.map((item) => <p key={item}>{item}</p>)}
+            {!nextPeriodItems.length ? <p>No next period focus captured in the selected weekly summary row.</p> : null}
           </article>
         </section>
 
@@ -2399,16 +2662,18 @@ function WeeklyExecutiveStatusView({
             {!risksIssues.length ? <p>No dashboard or red/amber risks or issues currently flagged.</p> : null}
           </article>
           <article className="weekly-card">
-            <h3>Decisions needed</h3>
+            <h3>Decisions</h3>
             {(() => {
               const visibleIds = decisionsNeeded.map((decision) => `decision-${decision.id}`);
               return decisionsNeeded.map((decision) => {
                 const id = `decision-${decision.id}`;
+                const made = isDecisionMadeThisPeriod(decision, weekly);
                 return (
                   <div className={`weekly-row curated ${dragItem?.id === id ? "dragging" : ""}`} key={decision.id} {...rowDropHandlers("decisions", id, visibleIds)}>
                     <div className="weekly-decision-row">
+                      <span>{made ? "Decision made" : "Decision required"}</span>
                       <strong>{decision.title}</strong>
-                      <em>Decision sits with: {decision.decisionMaker ?? decision.owner ?? "Not assigned"}</em>
+                      <em>{made ? "Decision made by" : "Decision sits with"}: {decision.decisionMaker ?? decision.owner ?? "Not assigned"}</em>
                     </div>
                     {renderControls("decisions", id, visibleIds)}
                   </div>
@@ -2418,24 +2683,27 @@ function WeeklyExecutiveStatusView({
             {!decisionsNeeded.length ? <p>No outstanding executive decisions currently flagged.</p> : null}
           </article>
           <article className="weekly-card">
-            <h3>Significant changes</h3>
+            <h3>Material Changes to Plan</h3>
             {(() => {
               const visibleIds = significantChanges.map((change) => `change-${change.id}`);
               return significantChanges.map((change) => {
                 const id = `change-${change.id}`;
                 return (
                   <div className={`weekly-row curated ${dragItem?.id === id ? "dragging" : ""}`} key={change.id} {...rowDropHandlers("changes", id, visibleIds)}>
-                    <div>
-                      <span>{formatDate(change.lastDiscussedDate ?? change.dateRaised)}</span>
+                    <div className="weekly-change-row">
+                      <span>{formatNumericDate(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised)}</span>
                       <strong>{change.title}</strong>
-                      <em>{meaningfulText(change.decisionRequired) ?? meaningfulText(change.impactOnTime) ?? meaningfulText(change.impactOnScope) ?? meaningfulText(change.impactOnCost) ?? meaningfulText(change.impactOnQualityOrBenefits) ?? change.status ?? "Significant change"}</em>
+                      <em><b>Was:</b> {meaningfulText(change.previousPosition) ?? "Not captured"}</em>
+                      <em><b>Now:</b> {meaningfulText(change.currentPosition) ?? "Not captured"}</em>
+                      <em><b>Impact:</b> {meaningfulText(change.reportingImpact) ?? meaningfulText(change.latestUpdate) ?? "Not captured"}</em>
+                      <em><b>Agreed:</b> {formatNumericDate(change.changeAgreedEffectiveDate, "Not captured")}</em>
                     </div>
                     {renderControls("changes", id, visibleIds)}
                   </div>
                 );
               });
             })()}
-            {!significantChanges.length ? <p>No significant changes currently flagged for leadership visibility.</p> : null}
+            {!significantChanges.length ? <p>No material changes to the programme plan this week.</p> : null}
           </article>
         </section>
       </div>
@@ -2449,13 +2717,13 @@ function WeeklyExecutiveStatusView({
         </div>
         <div className="weekly-tool-buttons">
           {!showStatusSummaryEditor ? <button type="button" onClick={() => setShowStatusSummaryEditor(true)}>Show status editor</button> : null}
-          {!showWhatChangedEditor ? <button type="button" onClick={() => setShowWhatChangedEditor(true)}>Show changes editor</button> : null}
+          {!showNarrativeEditor ? <button type="button" onClick={() => setShowNarrativeEditor(true)}>Show narrative editor</button> : null}
           <button type="button" className={isToolExpanded("upcoming") ? "active" : ""} aria-expanded={isToolExpanded("upcoming")} onClick={() => toggleTool("upcoming")}>More upcoming milestones ({moreUpcomingMilestones.length})</button>
           <button type="button" className={isToolExpanded("completed") ? "active" : ""} aria-expanded={isToolExpanded("completed")} onClick={() => toggleTool("completed")}>Completed milestones ({moreCompletedMilestones.length})</button>
           <button type="button" className={isToolExpanded("risks") ? "active" : ""} aria-expanded={isToolExpanded("risks")} onClick={() => toggleTool("risks")}>More risks ({moreRisks.length})</button>
           <button type="button" className={isToolExpanded("issues") ? "active" : ""} aria-expanded={isToolExpanded("issues")} onClick={() => toggleTool("issues")}>More issues ({moreIssues.length})</button>
           <button type="button" className={isToolExpanded("decisions") ? "active" : ""} aria-expanded={isToolExpanded("decisions")} onClick={() => toggleTool("decisions")}>More decisions ({moreDecisions.length})</button>
-          <button type="button" className={isToolExpanded("changes") ? "active" : ""} aria-expanded={isToolExpanded("changes")} onClick={() => toggleTool("changes")}>More changes ({moreChanges.length})</button>
+          <button type="button" className={isToolExpanded("changes") ? "active" : ""} aria-expanded={isToolExpanded("changes")} onClick={() => toggleTool("changes")}>More material changes ({moreChanges.length})</button>
         </div>
         {isToolExpanded("upcoming") ? (
           <WeeklySourceList
@@ -2494,8 +2762,8 @@ function WeeklyExecutiveStatusView({
         ) : null}
         {isToolExpanded("changes") ? (
           <WeeklySourceList
-            title="More changes"
-            items={moreChanges.map((change) => ({ id: `change-${change.id}`, title: change.title, eyebrow: formatDate(change.lastDiscussedDate ?? change.dateRaised), meta: meaningfulText(change.decisionRequired) ?? meaningfulText(change.impactOnTime) ?? meaningfulText(change.impactOnScope) ?? change.status ?? "" }))}
+            title="More material changes"
+            items={moreChanges.map((change) => ({ id: `change-${change.id}`, title: change.title, eyebrow: formatNumericDate(change.changeAgreedEffectiveDate ?? change.lastDiscussedDate ?? change.dateRaised), meta: meaningfulText(change.reportingImpact) ?? meaningfulText(change.currentPosition) ?? meaningfulText(change.impactOnTime) ?? meaningfulText(change.impactOnScope) ?? change.status ?? "" }))}
             onAdd={(id) => addToWeeklySection("changes", id)}
           />
         ) : null}
@@ -2504,6 +2772,10 @@ function WeeklyExecutiveStatusView({
         <button className="download-action" type="button" onClick={onExportPdf}>
           <Download size={15} />
           Download A4 Weekly Status PDF
+        </button>
+        <button className="download-action secondary" type="button" onClick={() => void copyForEmail()}>
+          <ClipboardCheck size={15} />
+          {emailCopied ? "Copied for Email" : "Copy for Email"}
         </button>
       </div>
     </>

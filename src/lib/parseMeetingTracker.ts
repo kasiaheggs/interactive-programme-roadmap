@@ -120,6 +120,9 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
       ragRationale: rowValue(row, "RAG rationale"),
       topicsDiscussed: rowValue(row, "Topics discussed"),
       keyProgress: rowValue(row, "Key progress"),
+      progressThisWeek: rowValue(row, "Progress this week"),
+      currentChallenges: rowValue(row, "Current challenges"),
+      nextPeriodFocus: rowValue(row, "Next Period Focus", "Next period focus"),
       whatChanged: rowValue(row, "What changed this week"),
       keyRisksOrIssues: rowValue(row, "Key risks or issues"),
       decisionsMade: rowValue(row, "Decisions made"),
@@ -208,7 +211,7 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
   const decisions: TrackerDecision[] = makeRows(workbook, "Decisions")
     .map((row) => ({
       id: rowValue(row, "Decision ID") ?? "",
-      decisionDate: rowDate(row, "Decision date"),
+      decisionDate: rowDate(row, "Decision date", "Decision log date"),
       decisionRequiredBy: rowDate(row, "Decision required by"),
       decisionRequiredByLabel: rowValue(row, "Decision required by"),
       dashboardFlag: rowFlag(row, "Dashboard Tag", "Dashboard Flag"),
@@ -222,6 +225,10 @@ export async function parseMeetingTracker(file: File): Promise<TrackerData> {
       status: rowValue(row, "Status"),
       updateType: rowValue(row, "Update type"),
       latestUpdate: rowValue(row, "Latest update"),
+      previousPosition: rowValue(row, "Previous position"),
+      currentPosition: rowValue(row, "Current position"),
+      reportingImpact: rowValue(row, "Reporting impact"),
+      changeAgreedEffectiveDate: rowDate(row, "Change agreed / effective date", "Change agreed effective date"),
     }))
     .filter((item) => item.id || item.title);
 
